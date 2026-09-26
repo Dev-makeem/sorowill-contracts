@@ -97,4 +97,12 @@ pub enum WillError {
     /// Cannot merge: the two wills' primary tokens differ, so summing their
     /// legacy `balance` fields would be nonsensical.
     PrimaryTokenMismatch = 39,
+    /// `add_hashed_beneficiary` was called with a `commitment` that is not
+    /// exactly 32 bytes, so it cannot be the SHA-256 digest of any pre-image
+    /// and the reserved share would be permanently unclaimable (#371).
+    InvalidCommitmentLength = 40,
+    /// `add_hashed_beneficiary` was called with a `commitment` that is already
+    /// registered on this will. `reveal_and_claim` always matches the first
+    /// slot, so a duplicate leaves the later slot's share unclaimable (#371).
+    DuplicateCommitment = 41,
 }

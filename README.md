@@ -248,6 +248,8 @@ disambiguate.
 | 35 | `InvalidPreimage` | `reveal_and_claim` was called with a pre-image that does not match any stored `HashedBeneficiary` commitment on the will. |
 | 36 | `AlreadyClaimed` | `reveal_and_claim` was called for a hashed beneficiary slot that has already been claimed. |
 | 37 | `TooManyWills` | An owner or beneficiary index list is already at `MAX_WILLS_PER_INDEX` and cannot accept another will id. |
+| 40 | `InvalidCommitmentLength` | `add_hashed_beneficiary` was called with a `commitment` that is not exactly 32 bytes, so it cannot be a SHA-256 digest of any pre-image. |
+| 41 | `DuplicateCommitment` | `add_hashed_beneficiary` was called with a `commitment` already registered on the same will. `reveal_and_claim` always matches the first slot, so a duplicate would be unclaimable. |
 
 ## Contract spec artifact
 
