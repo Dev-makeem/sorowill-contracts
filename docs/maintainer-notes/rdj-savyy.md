@@ -3,3 +3,7 @@
 ## Issue #416: archive_will leaves guardian votes and history behind
 
 Open PR #408 ("Drop history and guardian vote entries when archiving a will") already removes the `WillHistory` entry and every `GuardianVote` / `GuardianCancelVote` entry in `archive_will`, documents that history does not survive archival, and adds tests in `archive_will_test.rs`. On main, `archive_will` already removes the will from the owner, beneficiary and Triggered indexes. No duplicate code is added here; merging #408 resolves this issue.
+
+## Issue #417: get_wills_by_owner ordering and cursor stability
+
+Owner wills are held in the `OwnerWills` index, a `Vec<u64>` to which ids are only ever appended. Will ids come from a monotonically increasing counter, so the index is always in ascending will-id order, and `remove_owner_index` filters while preserving order. `storage::paginate_ids` resumes strictly after the cursor id (`id <= cursor` is skipped), so the cursor is keyed by will id rather than by position. A will created between two page calls receives a larger id than any existing one and therefore lands after the cursor, so pages neither skip nor duplicate entries. The guaranteed order is: ascending by will id, cursor exclusive. No code change is needed.
