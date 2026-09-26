@@ -49,6 +49,8 @@ mod errors;
 mod events;
 mod storage;
 mod types;
+mod split_uniqueness_check;
+mod guardian_vote_freshness;
 
 /// Reusable harness that drives entry points with arbitrary input and asserts
 /// the contract's invariants. Shared by the `proptest` suite in
@@ -252,6 +254,10 @@ mod renounce_validation_test;
 mod set_delegate_test;
 #[cfg(test)]
 mod split_will_test;
+#[cfg(test)]
+mod issue_420_test;
+#[cfg(test)]
+mod issue_422_test;
 // NOTE: `test.rs` (5800+ lines) is intentionally NOT wired in here. It
 // predates the current multi-token/Allocation-enum contract API entirely
 // (it exclusively uses a removed single-token `basis_points` signature) and
@@ -2033,7 +2039,10 @@ impl WillContract {
 
         events::guardian_voted(&env, will_id, &guardian, weight, will.guardian_vote_weight);
 
-        if will.guardian_vote_weight >= will.guardian_threshold {
+        if will.guardian_vote_weight >= will.guardian_threshold
+            && guardian_vote_freshness::live_guardian_vote_weight(&env, will_id, &will, now)
+                >= will.guardian_threshold
+        {
             record_transition(
                 &env,
                 will_id,
@@ -2989,6 +2998,7 @@ impl WillContract {
         if beneficiaries_to_split.is_empty() {
             panic_with_error!(&env, WillError::InvalidSplit);
         }
+        split_uniqueness_check::assert_split_addresses_unique(&env, &beneficiaries_to_split);
 
         // Accumulate requested amounts per token (duplicates are additive),
         // then verify each against what the source will actually holds.
