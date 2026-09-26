@@ -10,6 +10,26 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ## [Unreleased]
 
+### Added
+
+- `get_will_history_page`, a cursor/limit read over a will's audit trail. The
+  cursor is a zero-based offset into the trail; `limit` is capped at
+  `MAX_PAGE_SIZE`, matching the other paginated reads (#392).
+- `MAX_HISTORY_ENTRIES` (50), the cap on the status transitions retained per
+  will in its `WillHistory` entry. Documented on `get_will_history`: the trail
+  always holds the *most recent* transitions, oldest-first, and the off-chain
+  event log remains the source for the full untrimmed history.
+
+### Changed
+
+- `get_will_history` now returns at most `MAX_HISTORY_ENTRIES` transitions.
+  Previously every recorded transition was appended to one persistent vector
+  that was never trimmed, so a will cycling Active → Triggered → Active through
+  repeated emergency check-ins grew the entry without bound — risking the
+  per-entry ledger size limit on the write path and blowing past resource
+  limits on the read path, which returned the whole trail in one call with no
+  pagination (#392).
+
 ### Removed
 
 - Removed unused `InvalidPercentage` (code 22) error variant from `WillError`.

@@ -656,9 +656,39 @@ pub const MAX_WILLS_PER_INDEX: u32 = 1_000;
 #[cfg(test)]
 pub const MAX_WILLS_PER_INDEX: u32 = 10;
 
+/// Maximum number of status transitions retained per will in its
+/// `WillHistory` entry.
+///
+/// Every recorded transition is appended to a single persistent vector, so a
+/// will that cycles Active → Triggered → Active through repeated emergency
+/// check-ins would otherwise grow that entry without bound: the write path
+/// eventually risks the per-entry ledger size limit, and the read path
+/// (`get_will_history`) deserialises and returns the whole trail in one call
+/// with no way for a caller to page through it (#392).
+///
+/// A cap is preferred over a paged storage layout here because a will's
+/// lifecycle is bounded in practice — the transitions are `create`, the
+/// `check_in` / `emergency_checkin` / `trigger` / `release` / `cancel` family,
+/// and a handful of guardian and settings updates — while the number of
+/// *repeats* is what grows. Keeping the newest [`MAX_HISTORY_ENTRIES`]
+/// transitions preserves every entry a reader actually needs (the current
+/// state and how it got there) and bounds the entry at a few kilobytes,
+/// comfortably inside Soroban's max entry size.
+///
+/// When the cap is reached the **oldest** entry is dropped, so the retained
+/// trail is always the most recent [`MAX_HISTORY_ENTRIES`] transitions. This is
+/// a deliberate trade of audit completeness for bounded storage: consumers who
+/// need the full history should follow the off-chain event log, which is
+/// append-only and never trimmed.
+pub const MAX_HISTORY_ENTRIES: u32 = 50;
+
 /// Maximum number of wills returned per page.
 pub const MAX_PAGE_SIZE: u32 = 50;
+
 /// Appends a status transition entry to `will_id`'s on-chain audit trail.
+///
+/// Trims the oldest entries once the trail reaches [`MAX_HISTORY_ENTRIES`] so
+/// the persistent entry stays bounded (see that constant for the rationale).
 pub fn append_history(env: &Env, will_id: u64, transition: &WillStatusTransition) {
     let key = DataKey::WillHistory(will_id);
     let mut history: Vec<WillStatusTransition> = env
@@ -667,19 +697,67 @@ pub fn append_history(env: &Env, will_id: u64, transition: &WillStatusTransition
         .get(&key)
         .unwrap_or_else(|| Vec::new(env));
     history.push_back(transition.clone());
+    // Drop from the front until the trail fits the cap. A `while` loop rather
+    // than a single indexed removal keeps this correct if a future change
+    // appends more than one entry per call.
+    while history.len() > MAX_HISTORY_ENTRIES {
+        history.remove(0);
+    }
     env.storage().persistent().set(&key, &history);
     env.storage()
         .persistent()
         .extend_ttl(&key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
 }
 
-/// Returns the full audit trail for `will_id`.
+/// Returns the retained audit trail for `will_id`.
+///
+/// The trail holds at most [`MAX_HISTORY_ENTRIES`] transitions — the most
+/// recent ones. Callers that want a bounded slice can page through it with
+/// [`paginate_history`] instead of taking the whole vector.
 pub fn get_history(env: &Env, will_id: u64) -> Vec<WillStatusTransition> {
     let key = DataKey::WillHistory(will_id);
     env.storage()
         .persistent()
         .get(&key)
         .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Returns a bounded page of `will_id`'s audit trail, oldest-first.
+///
+/// `cursor` is an optional zero-based index into the trail; results start at
+/// that offset. `limit` is capped at [`MAX_PAGE_SIZE`], matching the other
+/// paginated reads in this contract.
+///
+/// The cursor is positional rather than keyed like [`paginate_ids`]'s will-id
+/// cursor because history entries carry no sortable key of their own — the
+/// only ordering they have is their position in the trail, and the trail is
+/// append-then-trim-from-the-front. A caller paging from the start therefore
+/// holds a stable view for the duration of the walk as long as no transition
+/// is appended past it; once the cap trims the front, earlier offsets shift and
+/// the walk should restart. That is acceptable because the tail is what
+/// matters and `cursor: None` always returns the newest-and-oldest-remaining
+/// page from the start of the retained window.
+pub fn paginate_history(
+    env: &Env,
+    will_id: u64,
+    cursor: Option<u32>,
+    limit: u32,
+) -> Vec<WillStatusTransition> {
+    let history = get_history(env, will_id);
+    let page_size = limit.min(MAX_PAGE_SIZE);
+    let start = cursor.unwrap_or(0);
+    let mut result = Vec::new(env);
+    let mut index = 0u32;
+    for entry in history.iter() {
+        if index >= start && result.len() < page_size {
+            result.push_back(entry);
+        }
+        index += 1;
+        if index >= start.saturating_add(page_size) {
+            break;
+        }
+    }
+    result
 }
 
 /// Archives a will by moving it to the archived storage and removing it from
