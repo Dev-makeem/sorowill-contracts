@@ -160,6 +160,13 @@ mod update_guardians_threshold_test;
 #[cfg(test)]
 mod issue_299_test;
 
+/// Regression tests for issues #350-#353: duplicate-token rejection and
+/// mirror/balances agreement (#350), real from/to statuses in the audit trail
+/// (#351), `confirm_will`/`close_will` history entries (#352), and per-token
+/// locked-value decrements on cancellation (#353).
+#[cfg(test)]
+mod issue_350_353_test;
+
 /// Regression test: `has_guardian_voted` / `has_guardian_cancel_voted` use a
 /// checked elapsed-time subtraction and cannot underflow when `now` precedes
 /// the recorded vote timestamp.
@@ -400,6 +407,8 @@ impl WillContract {
     /// - [`WillError::InvalidPercentages`] if beneficiary basis points do not sum to 10,000.
     /// - [`WillError::DuplicateBeneficiary`] if the same address is supplied twice.
     /// - [`WillError::DuplicateGuardian`] if the same guardian is supplied twice.
+    /// - [`WillError::DuplicateToken`] if the same token address appears more
+    ///   than once in `tokens`.
     /// - [`WillError::InvalidPeriod`] if either period is zero or exceeds
     ///   [`MAX_PERIOD_DAYS`].
     /// - [`WillError::InvalidToken`] if any supplied token address does not respond to a
@@ -470,6 +479,18 @@ impl WillContract {
         if tokens.is_empty() || tokens.len() > MAX_TOKENS {
             panic_with_error!(&env, WillError::TooManyBeneficiaries);
         }
+        // Reject duplicate token addresses up front, before any transfer
+        // happens. The rustdoc for this function promises each token address
+        // is unique; letting a duplicate through would additionally make the
+        // legacy `balance` mirror (derived from the first entry) disagree with
+        // the accumulated `balances` map (#350).
+        let mut seen_tokens: Vec<Address> = Vec::new(&env);
+        for (token_addr, _) in tokens.iter() {
+            if seen_tokens.contains(&token_addr) {
+                panic_with_error!(&env, WillError::DuplicateToken);
+            }
+            seen_tokens.push_back(token_addr);
+        }
         if beneficiaries.is_empty() || beneficiaries.len() > MAX_BENEFICIARIES {
             panic_with_error!(&env, WillError::TooManyBeneficiaries);
         }
@@ -523,9 +544,8 @@ impl WillContract {
                 &env.current_contract_address(),
                 &amount,
             );
-            // Accumulate in case the caller somehow duplicated the same token
-            // address twice — treat it as an additive top-up rather than
-            // silently overwriting.
+            // Duplicates were rejected above, so this is a plain insert; the
+            // additive accumulation is kept so the intent stays explicit.
             let prev = balances.get(token_addr.clone()).unwrap_or(0);
             balances.set(token_addr, prev + amount);
         }
@@ -560,9 +580,12 @@ impl WillContract {
         // `token`/`balance` mirror the first locked token for backward
         // compatibility with single-token helpers (merge_wills, split_will,
         // reveal_and_claim); `balances` above is the authoritative
-        // multi-token source of truth. `primary_token`/`primary_amount` were
-        // read from `tokens.get_unchecked(0)` above, where the fixed-amount
-        // validation needed them.
+        // multi-token source of truth. Derive the mirror from the accumulated
+        // map (rather than re-reading the first `tokens` entry) so `balance`
+        // can never disagree with `balances[token]` (#350).
+        let (primary_token, _) = tokens.get_unchecked(0);
+        let primary_balance = balances.get(primary_token.clone()).unwrap_or(0);
+
         let will = Will {
             id: will_id,
             owner: owner.clone(),
@@ -598,11 +621,16 @@ impl WillContract {
             storage::adjust_locked_value(&env, &token_addr, amount);
         }
 
+        // Record the will's real initial status as both endpoints of this
+        // self-transition: `Active -> Active` when it starts immediately, and
+        // `PendingConfirmation -> PendingConfirmation` when a confirmation
+        // delay is in effect. Recording a hardcoded `Active` here would hide
+        // the real `PendingConfirmation` state from `get_will_history` (#351).
         record_transition(
             &env,
             will_id,
-            WillStatus::Active,
-            WillStatus::Active,
+            status,
+            status,
             &owner,
             symbol_short!("create"),
         );
@@ -650,6 +678,17 @@ impl WillContract {
         will.last_checkin = now;
         will.confirmation_deadline = None;
         storage::save_will(&env, &will);
+
+        // Record the confirmation in the audit trail so `get_will_history`
+        // can reconstruct the full lifecycle (#352).
+        record_transition(
+            &env,
+            will_id,
+            WillStatus::PendingConfirmation,
+            WillStatus::Active,
+            &owner,
+            symbol_short!("confirm"),
+        );
 
         events::will_confirmed(&env, will_id, &owner);
     }
@@ -911,15 +950,26 @@ impl WillContract {
         }
 
         // Snapshot the balances before mutating state (checks-effects-interactions).
-        let refund = will.balance;
         let contract_address = env.current_contract_address();
         let token_count = will.balances.len();
         // Capture balances for transfer after state is committed.
         let balances_snapshot = will.balances.clone();
+        // `cancel_will` accepts both `Active` and `PendingConfirmation`, so the
+        // audit trail must record whichever state the will actually cancelled
+        // from rather than a hardcoded `Active` (#351).
+        let prior_status = will.status;
 
         // --- EFFECTS: mutate state and persist before any external calls ---
         storage::decrement_active_will_count(&env);
-        storage::adjust_locked_value(&env, &will.token, -refund);
+        // Decrement the protocol locked-value total for *every* token the will
+        // held, not just the primary-token mirror, so a multi-token
+        // cancellation does not leave the other tokens' totals permanently
+        // inflated (#353).
+        for (token_addr, balance) in balances_snapshot.iter() {
+            if balance > 0 {
+                storage::adjust_locked_value(&env, &token_addr, -balance);
+            }
+        }
 
         will.balance = 0;
         will.balances = Map::new(&env);
@@ -938,7 +988,7 @@ impl WillContract {
         record_transition(
             &env,
             will_id,
-            WillStatus::Active,
+            prior_status,
             WillStatus::Cancelled,
             &owner,
             symbol_short!("cancel"),
@@ -973,6 +1023,17 @@ impl WillContract {
 
         will.status = WillStatus::Settled;
         storage::save_will(&env, &will);
+
+        // Record the Released -> Settled transition so the audit trail from
+        // `get_will_history` has no gaps (#352).
+        record_transition(
+            &env,
+            will_id,
+            WillStatus::Released,
+            WillStatus::Settled,
+            &owner,
+            symbol_short!("close"),
+        );
 
         events::will_closed(&env, will_id, &owner);
     }
@@ -2338,6 +2399,16 @@ impl WillContract {
             if tokens.is_empty() || tokens.len() > MAX_TOKENS {
                 panic_with_error!(&env, WillError::TooManyBeneficiaries);
             }
+            // Mirror `create_will`'s duplicate-token rejection so a batch spec
+            // can never produce a will whose `balance` mirror disagrees with
+            // its `balances` map (#350).
+            let mut seen_tokens: Vec<Address> = Vec::new(&env);
+            for (token_addr, _) in tokens.iter() {
+                if seen_tokens.contains(&token_addr) {
+                    panic_with_error!(&env, WillError::DuplicateToken);
+                }
+                seen_tokens.push_back(token_addr);
+            }
             if beneficiaries.is_empty() || beneficiaries.len() > MAX_BENEFICIARIES {
                 panic_with_error!(&env, WillError::TooManyBeneficiaries);
             }
@@ -2389,6 +2460,9 @@ impl WillContract {
             for beneficiary in beneficiaries.iter() {
                 storage::index_by_beneficiary(&env, &beneficiary.address, will_id);
             }
+
+            let (primary_token, _) = tokens.get_unchecked(0);
+            let primary_balance = balances.get(primary_token.clone()).unwrap_or(0);
 
             let will = Will {
                 id: will_id,

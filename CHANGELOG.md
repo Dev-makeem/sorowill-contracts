@@ -10,38 +10,23 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ## [Unreleased]
 
-### Fixed
-
-- `Allocation::FixedAmount` is now denominated in the will's **primary token**
-  (`Will::token`, the first entry of the `tokens` list) instead of being paid
-  out of *every* token the will holds, and `assert_valid_allocations` validates
-  the fixed total against that token's balance rather than the sum across all
-  of them. Previously a two-token will with a `FixedAmount(100)` beneficiary
-  paid out 100 units of each token while validation compared 100 against the
-  combined total, so the two could disagree by a wide margin (#384).
-- A `FixedAmount`-only will that leaves value unallocated no longer strands
-  that value in the contract. `distribute` refunds the remainder of every token
-  to the will's owner and publishes a new `leftover_refunded` event; the will's
-  `balances` are cleared and it is marked `Released` as before, but no tokens
-  are left with no accounting and no withdrawal path (#383).
-- `distribute` finally has its own doc comment. A stack of `///` paragraphs
-  describing rounding, multi-token payout and checks-effects-interactions was
-  attached to `proportional_share`, leaving `distribute` undocumented and
-  `proportional_share`'s rustdoc describing something else, with several
-  overlapping or truncated sentences (#385).
-
-### Changed
-
-- `create_will`, `clone_will`, `batch_create_wills`, `split_will`,
-  `update_beneficiaries`, `renounce_beneficiary` and `update_will_settings`
-  now validate `FixedAmount` commitments against the will's primary-token
-  balance. A commitment that only the *sum* of several tokens could cover is
-  rejected up front rather than being silently under-paid at release (#384).
-
 ### Added
 
-- `leftover_refunded` event (`lftback`), emitted per token when a released
-  will returns unallocated value to its owner (#383).
+- `WillError::DuplicateToken` (code 40): `create_will` and `batch_create_wills`
+  now reject a `tokens` list that names the same token address twice (#350).
+- `get_will_history` now records the `confirm_will` (`PendingConfirmation` to
+  `Active`) and `close_will` (`Released` to `Settled`) transitions (#352).
+
+### Fixed
+
+- `create_will` / `cancel_will` now record the will's real status in the audit
+  trail instead of a hardcoded `Active`, so `get_will_history` is accurate for
+  wills created with a confirmation delay and cancelled while pending (#351).
+- `cancel_will` now decrements `ProtocolStats.total_locked_by_token` for every
+  token the will held, not just the primary token, so `get_protocol_stats` no
+  longer overstates locked value after a multi-token cancellation (#353).
+- `create_will` derives the legacy `token`/`balance` mirror from the
+  accumulated `balances` map, so the two can no longer disagree (#350).
 
 ### Removed
 
