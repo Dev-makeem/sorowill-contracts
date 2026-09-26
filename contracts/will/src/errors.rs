@@ -97,4 +97,6 @@ pub enum WillError {
     /// Cannot merge: the two wills' primary tokens differ, so summing their
     /// legacy `balance` fields would be nonsensical.
     PrimaryTokenMismatch = 39,
+    /// `batch_check_in` was given more will IDs than the per-call limit.
+    BatchTooLarge = 40,
 }
