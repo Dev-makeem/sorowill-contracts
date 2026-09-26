@@ -131,6 +131,8 @@ use will::{MAX_BENEFICIARIES, MAX_GUARDIANS, GUARDIAN_THRESHOLD};
 | `get_time_until_deadline` | Seconds until the will's next relevant deadline (check-in or grace period); negative if past due, `None` if not applicable to the current status | `will_id` | `Option<i64>` |
 | `get_wills_by_owner` | Lists every will owned by an address | `owner` | `Vec<Will>` |
 | `get_wills_by_beneficiary` | Lists every will an address is named in | `beneficiary` | `Vec<Will>` |
+| `get_will_history` | Reads a will's on-chain audit trail (capped at the newest `MAX_HISTORY_ENTRIES` transitions) | `will_id` | `Vec<WillStatusTransition>` |
+| `get_will_history_page` | Reads a bounded, cursor-paged slice of a will's audit trail | `will_id`, `cursor`, `limit` | `Vec<WillStatusTransition>` |
 | `guardian_trigger` | Casts a guardian vote; 2 of 3 forces an early release | `will_id`, `guardian` | — |
 
 `checkin_period_days` and `grace_period_days` passed to `create_will` must each be at least `1` day (and at most `MAX_PERIOD_DAYS`); a value of `0` panics with `WillError::InvalidPeriod`.
@@ -199,6 +201,24 @@ was explicitly archived) from one that never existed. This is documented on
 probe. See [issue #166](https://github.com/SoroWill/sorowill-contracts/issues/166)
 for the full context.
 
+### What `archive_will` removes
+
+`archive_will` is permissionless: once a will is `Released` or `Cancelled`, any
+account may call it to reclaim storage. Beyond the will entry and the
+owner/beneficiary/Triggered indexes, it also drops the will's on-chain
+`WillHistory` entry and every `GuardianVote` / `GuardianCancelVote` entry
+belonging to its guardians.
+
+**History does not survive archival.** Those keys are only ever read to describe
+a *live* will, so retaining them would strand ledger state — paid for out of the
+protocol's rent — for entries no query can resolve. Consumers that need the
+audit trail after a will is archived must use the **off-chain event log**,
+which is append-only and never trimmed; the archived `Will` itself keeps the
+final status, balances, and parties until Soroban's state archival collects it.
+In particular, `get_will_history` returns an empty trail for an archived will
+and must not be used as a post-archival recovery path. See
+[issue #393](https://github.com/SoroWill/sorowill-contracts/issues/393).
+
 ## Error codes
 
 Every failure mode is a `#[contracterror]` variant of `WillError`
@@ -216,7 +236,7 @@ disambiguate.
 | 3 | `WillNotActive` | The requested action requires the will to be `Active`. |
 | 4 | `WillNotTriggered` | The requested action requires the will to be `Triggered`. |
 | 5 | `GracePeriodNotExpired` | `release_inheritance` was called before the grace period elapsed. |
-| 6 | `GracePeriodExpired` | `emergency_checkin` was called after the grace period already elapsed. |
+| 6 | `GracePeriodExpired` | `emergency_checkin` (or `guardian_cancel_trigger`) was called after the grace period already elapsed. A `Triggered` will can no longer be returned to `Active` once the grace period is over. |
 | 7 | `InvalidPercentages` | Beneficiary percentages did not sum to exactly 10,000 basis points. |
 | 8 | `AlreadyVoted` | The guardian has already voted to trigger this will. |
 | 9 | `NotGuardian` | The caller is not a designated guardian of this will. |
@@ -245,11 +265,12 @@ disambiguate.
 | 32 | `TooManyIds` | `get_wills` was called with more ids than `MAX_GET_WILLS_IDS`. |
 | 33 | `InsufficientBalance` | `split_will` was asked to move more of a token than the will currently holds of it. |
 | 34 | `InvalidSplit` | `split_will` was called with an empty beneficiary-to-split list, or a split that would leave the source or new will with an invalid state. |
-| 35 | `InvalidPreimage` | `reveal_and_claim` was called with a pre-image that does not match any stored `HashedBeneficiary` commitment on the will. |
+| 35 | `InvalidPreimage` | `reveal_and_claim` was called with a 64-byte pre-image whose SHA-256 does not match any stored `HashedBeneficiary` commitment on the will. |
 | 36 | `AlreadyClaimed` | `reveal_and_claim` was called for a hashed beneficiary slot that has already been claimed. |
 | 37 | `TooManyWills` | An owner or beneficiary index list is already at `MAX_WILLS_PER_INDEX` and cannot accept another will id. |
-| 40 | `InvalidCommitmentLength` | `add_hashed_beneficiary` was called with a `commitment` that is not exactly 32 bytes, so it cannot be a SHA-256 digest of any pre-image. |
-| 41 | `DuplicateCommitment` | `add_hashed_beneficiary` was called with a `commitment` already registered on the same will. `reveal_and_claim` always matches the first slot, so a duplicate would be unclaimable. |
+| 38 | `GuardianNotConsented` | A guardian has not accepted their role and cannot vote. |
+| 39 | `PrimaryTokenMismatch` | Cannot merge: the two wills' primary tokens differ. |
+| 40 | `InvalidTokenCount` | The token list supplied to `create_will`, `clone_will`, `split_will`, or `batch_create_wills` was empty, or contained more than `MAX_TOKENS` entries. |
 
 ## Contract spec artifact
 

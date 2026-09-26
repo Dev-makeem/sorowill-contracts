@@ -19,7 +19,8 @@ pub enum WillError {
     WillNotTriggered = 4,
     /// `release_inheritance` was called before the grace period elapsed.
     GracePeriodNotExpired = 5,
-    /// `emergency_checkin` was called after the grace period already elapsed.
+    /// `emergency_checkin` (or `guardian_cancel_trigger`) was called after the
+    /// grace period already elapsed.
     GracePeriodExpired = 6,
     /// Beneficiary percentages did not sum to exactly 10,000.
     InvalidPercentages = 7,
@@ -97,12 +98,9 @@ pub enum WillError {
     /// Cannot merge: the two wills' primary tokens differ, so summing their
     /// legacy `balance` fields would be nonsensical.
     PrimaryTokenMismatch = 39,
-    /// `add_hashed_beneficiary` was called with a `commitment` that is not
-    /// exactly 32 bytes, so it cannot be the SHA-256 digest of any pre-image
-    /// and the reserved share would be permanently unclaimable (#371).
-    InvalidCommitmentLength = 40,
-    /// `add_hashed_beneficiary` was called with a `commitment` that is already
-    /// registered on this will. `reveal_and_claim` always matches the first
-    /// slot, so a duplicate leaves the later slot's share unclaimable (#371).
-    DuplicateCommitment = 41,
+    /// The same token address was supplied more than once in a `tokens`
+    /// list. `create_will` documents each token address as unique, and a
+    /// duplicated entry would make the legacy `balance` mirror disagree with
+    /// the accumulated `balances` map (#350).
+    DuplicateToken = 40,
 }

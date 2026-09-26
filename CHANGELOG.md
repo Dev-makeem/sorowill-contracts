@@ -10,17 +10,23 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ## [Unreleased]
 
+### Added
+
+- `WillError::DuplicateToken` (code 40): `create_will` and `batch_create_wills`
+  now reject a `tokens` list that names the same token address twice (#350).
+- `get_will_history` now records the `confirm_will` (`PendingConfirmation` to
+  `Active`) and `close_will` (`Released` to `Settled`) transitions (#352).
+
 ### Fixed
 
-- `add_hashed_beneficiary` now rejects three shapes of input that stranded a
-  reserved share forever (#371): a `commitment` that is not exactly 32 bytes
-  (new `WillError::InvalidCommitmentLength`, code 40 — no pre-image can hash
-  to it), a `commitment` already registered on the same will (new
-  `WillError::DuplicateCommitment`, code 41 — `reveal_and_claim` always matches
-  the first slot, so the duplicate was unreachable), and a `percentage` of 0
-  (reserved nothing yet still occupied a slot and diluted the other hashed
-  beneficiaries). This mirrors the zero-percentage and duplicate-address rules
-  `assert_valid_allocations` already applied to visible beneficiaries.
+- `create_will` / `cancel_will` now record the will's real status in the audit
+  trail instead of a hardcoded `Active`, so `get_will_history` is accurate for
+  wills created with a confirmation delay and cancelled while pending (#351).
+- `cancel_will` now decrements `ProtocolStats.total_locked_by_token` for every
+  token the will held, not just the primary token, so `get_protocol_stats` no
+  longer overstates locked value after a multi-token cancellation (#353).
+- `create_will` derives the legacy `token`/`balance` mirror from the
+  accumulated `balances` map, so the two can no longer disagree (#350).
 
 ### Removed
 
