@@ -19,7 +19,8 @@ pub enum WillError {
     WillNotTriggered = 4,
     /// `release_inheritance` was called before the grace period elapsed.
     GracePeriodNotExpired = 5,
-    /// `emergency_checkin` was called after the grace period already elapsed.
+    /// `emergency_checkin` (or `guardian_cancel_trigger`) was called after the
+    /// grace period already elapsed.
     GracePeriodExpired = 6,
     /// Beneficiary percentages did not sum to exactly 10,000.
     InvalidPercentages = 7,

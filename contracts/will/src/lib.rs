@@ -279,7 +279,7 @@ pub use types::{
 /// [`WillContract::get_contract_version`].
 ///
 /// Current baseline: **1.0.0** → `1_000_000`.
-pub const CONTRACT_VERSION: u32 = 1_000_000;
+pub const CONTRACT_VERSION: u32 = 1_000_001;
 
 /// Number of seconds in a day, used to convert the day-denominated periods
 /// stored on a `Will` into absolute ledger timestamps.
@@ -354,7 +354,7 @@ soroban_sdk::contractmeta!(
 // issue_272_test.rs; bump both together.
 soroban_sdk::contractmeta!(
     key = "Version",
-    val = "1.0.0"
+    val = "1.0.1"
 );
 soroban_sdk::contractmeta!(
     key = "Homepage",
@@ -2025,12 +2025,25 @@ impl WillContract {
     /// (starting a fresh check-in countdown), and all cancel-vote records are
     /// cleared.
     ///
+    /// # Grace period
+    ///
+    /// A cancel vote is only meaningful *during* the grace period, and this
+    /// entrypoint enforces the same deadline [`emergency_checkin`] does: once
+    /// `trigger_time + grace_period_days` has passed, the cancel is rejected
+    /// with [`WillError::GracePeriodExpired`] and the will can no longer be
+    /// rewound to `Active`. Without that check a guardian quorum could undo an
+    /// expired trigger *after* the funds had already become releasable through
+    /// [`release_inheritance`], and could repeat the trick every check-in cycle
+    /// to block the release indefinitely (#373).
+    ///
     /// # Parameters
     /// - `will_id`: the will whose trigger should be cancelled.
     /// - `guardian`: the guardian casting the cancel vote; must authorize.
     ///
     /// # Panics
     /// - [`WillError::WillNotTriggered`] if the will is not `Triggered`.
+    /// - [`WillError::GracePeriodExpired`] if the will's grace period has
+    ///   already elapsed (#373).
     /// - [`WillError::NotGuardian`] if `guardian` is not one of the will's guardians.
     /// - [`WillError::AlreadyVoted`] if `guardian` already cast a cancel vote in this cycle.
     /// - [`WillError::GuardianCooldownActive`] if the guardian-list cooldown has not elapsed.
@@ -2044,8 +2057,20 @@ impl WillContract {
             WillError::WillNotTriggered,
         );
 
-        // Enforce guardian-list cooldown (same rule as guardian_trigger).
         let now = env.ledger().timestamp();
+
+        // The grace period is the window in which a trigger may still be undone.
+        // Past it the estate is releasable via `release_inheritance`, so a
+        // cancel quorum must not be able to rewind the will to `Active` and
+        // restart the check-in clock (#373) -- same rule `emergency_checkin`
+        // enforces, so a guardian quorum and the owner are held to one deadline.
+        let trigger_time = will.trigger_time.unwrap_or(0);
+        let grace_deadline = trigger_time + will.grace_period_days * SECONDS_PER_DAY;
+        if now > grace_deadline {
+            panic_with_error!(&env, WillError::GracePeriodExpired);
+        }
+
+        // Enforce guardian-list cooldown (same rule as guardian_trigger).
         let cooldown_seconds = GUARDIAN_COOLDOWN_DAYS * SECONDS_PER_DAY;
         let cooldown_ends = will.guardian_list_updated_at + cooldown_seconds;
         if now < cooldown_ends {

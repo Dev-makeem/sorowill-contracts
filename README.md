@@ -236,7 +236,7 @@ disambiguate.
 | 3 | `WillNotActive` | The requested action requires the will to be `Active`. |
 | 4 | `WillNotTriggered` | The requested action requires the will to be `Triggered`. |
 | 5 | `GracePeriodNotExpired` | `release_inheritance` was called before the grace period elapsed. |
-| 6 | `GracePeriodExpired` | `emergency_checkin` was called after the grace period already elapsed. |
+| 6 | `GracePeriodExpired` | `emergency_checkin` (or `guardian_cancel_trigger`) was called after the grace period already elapsed. A `Triggered` will can no longer be returned to `Active` once the grace period is over. |
 | 7 | `InvalidPercentages` | Beneficiary percentages did not sum to exactly 10,000 basis points. |
 | 8 | `AlreadyVoted` | The guardian has already voted to trigger this will. |
 | 9 | `NotGuardian` | The caller is not a designated guardian of this will. |
