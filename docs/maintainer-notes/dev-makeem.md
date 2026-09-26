@@ -8,3 +8,7 @@ Not duplicated here. Open PR #407 ("Bound WillHistory and add a paged history re
 
 No code change. `distribute` takes no snapshot parameter: it pays out from `will.balances`, the on-chain map stored in the will. `top_up` requires `WillStatus::Active`, so balances cannot change after `trigger_will` moves the will out of Active, and the payout cannot include tokens added after the trigger. A caller cannot supply a modified snapshot, so there is nothing to compare or hash.
 
+## #415 update_guardians threshold reachability
+
+No code change. `update_guardians` already rejects `guardian_threshold > new_guardians.len()` with `WillError::InvalidGuardianThreshold` for any non-empty list, and `update_guardians_threshold_test.rs` covers the rejection. `update_guardians_weighted` validates against total weight.
+
