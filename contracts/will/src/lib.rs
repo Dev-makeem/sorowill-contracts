@@ -138,6 +138,12 @@ mod merge_active_count_test;
 #[cfg(test)]
 mod merge_rounding_test;
 
+/// Regression tests for issues #383 (leftover refund on `FixedAmount`-only
+/// wills), #384 (`FixedAmount` denominated in the primary token) and #385
+/// (`distribute`'s doc block was attached to `proportional_share`).
+#[cfg(test)]
+mod issue_383_385_test;
+
 /// Regression test for issue #189: ensure `merge_wills` preserves `Allocation::FixedAmount`
 /// beneficiaries' fixed-amount semantics instead of converting to `Allocation::Percentage`.
 #[cfg(test)]
@@ -366,8 +372,14 @@ impl WillContract {
     /// - `tokens`: a list of `(token_address, amount)` pairs to lock. Each
     ///   token address must be unique, each amount must be positive, and the
     ///   list must contain between 1 and `MAX_TOKENS` entries.
-    /// - `beneficiaries`: 1 to `MAX_BENEFICIARIES` entries whose basis points
-    ///   sum to exactly 10,000.
+    /// - `beneficiaries`: 1 to `MAX_BENEFICIARIES` entries. Percentage
+    ///   allocations must sum to exactly 10,000 basis points; fixed amounts
+    ///   are denominated in the will's **primary token** (the first entry of
+    ///   `tokens`) and their sum must not exceed that token's amount. A list
+    ///   made up only of `Allocation::FixedAmount` entries may leave value
+    ///   unallocated — whatever the fixed amounts do not claim is refunded to
+    ///   the owner when the inheritance is released (see [`Allocation`] and
+    ///   issue #383).
     /// - `checkin_period_days`: how many days the owner may go without checking
     ///   in; 1 to `MAX_PERIOD_DAYS`.
     /// - `grace_period_days`: how many days after being triggered the owner has
@@ -518,7 +530,14 @@ impl WillContract {
             balances.set(token_addr, prev + amount);
         }
 
-        assert_valid_allocations(&env, &beneficiaries, total_balance(&balances));
+        // Fixed amounts are denominated in the will's primary token, which is
+        // the first entry of `tokens` (mirrored into `Will::token` below).
+        let (primary_token, primary_amount) = tokens.get_unchecked(0);
+        assert_valid_allocations(
+            &env,
+            &beneficiaries,
+            primary_token_balance(&balances, &primary_token),
+        );
 
         let will_id = storage::next_will_id(&env);
         let now = env.ledger().timestamp();
@@ -541,16 +560,16 @@ impl WillContract {
         // `token`/`balance` mirror the first locked token for backward
         // compatibility with single-token helpers (merge_wills, split_will,
         // reveal_and_claim); `balances` above is the authoritative
-        // multi-token source of truth.
-        let (primary_token, primary_balance) = tokens.get_unchecked(0);
-
+        // multi-token source of truth. `primary_token`/`primary_amount` were
+        // read from `tokens.get_unchecked(0)` above, where the fixed-amount
+        // validation needed them.
         let will = Will {
             id: will_id,
             owner: owner.clone(),
             balances,
             token: primary_token,
             is_native: false,
-            balance: primary_balance,
+            balance: primary_amount,
             beneficiaries,
             hashed_beneficiaries: Vec::new(&env),
             checkin_period_days,
@@ -980,7 +999,11 @@ impl WillContract {
         if beneficiaries.is_empty() || beneficiaries.len() > MAX_BENEFICIARIES {
             panic_with_error!(&env, WillError::TooManyBeneficiaries);
         }
-        assert_valid_allocations(&env, &beneficiaries, total_balance(&will.balances));
+        assert_valid_allocations(
+            &env,
+            &beneficiaries,
+            primary_token_balance(&will.balances, &will.token),
+        );
 
         // Only addresses that actually join or leave the will need their
         // reverse index touched. Unconditionally removing every old address
@@ -1161,8 +1184,11 @@ impl WillContract {
         storage::remove_beneficiary_index(&env, &beneficiary, will_id);
 
         // Validate the redistributed beneficiary allocations
-        let will_balance = total_balance(&will.balances);
-        assert_valid_allocations(&env, &will.beneficiaries, will_balance);
+        assert_valid_allocations(
+            &env,
+            &will.beneficiaries,
+            primary_token_balance(&will.balances, &will.token),
+        );
 
         // Get the owner for event emission (not changed)
         let owner = will.owner.clone();
@@ -1400,7 +1426,11 @@ impl WillContract {
             if new_beneficiaries.is_empty() || new_beneficiaries.len() > MAX_BENEFICIARIES {
                 panic_with_error!(&env, WillError::TooManyBeneficiaries);
             }
-            assert_valid_allocations(&env, &new_beneficiaries, total_balance(&will.balances));
+            assert_valid_allocations(
+                &env,
+                &new_beneficiaries,
+                primary_token_balance(&will.balances, &will.token),
+            );
 
             // Update reverse indexes
             for old in will.beneficiaries.iter() {
@@ -1695,7 +1725,6 @@ impl WillContract {
     /// - `limit`: maximum number of wills to return. Capped at
     ///   [`storage::MAX_PAGE_SIZE`].
     pub fn get_wills_by_owner_and_status(
-
         env: Env,
         owner: Address,
         status: WillStatus,
@@ -2188,8 +2217,15 @@ impl WillContract {
         // Re-validate `FixedAmount` beneficiaries against the clone's new
         // balance (#239): funding a clone with less than the original
         // fixed-amount commitments must fail loudly here rather than
-        // silently under-paying at distribute() time.
-        assert_valid_allocations(&env, &source.beneficiaries, total_balance(&balances));
+        // silently under-paying at distribute() time. Fixed amounts are
+        // denominated in the clone's primary token, the first entry of
+        // `tokens` (#384).
+        let (primary_token, primary_amount) = tokens.get_unchecked(0);
+        assert_valid_allocations(
+            &env,
+            &source.beneficiaries,
+            primary_token_balance(&balances, &primary_token),
+        );
 
         let will_id = storage::next_will_id(&env);
         let now = env.ledger().timestamp();
@@ -2199,15 +2235,13 @@ impl WillContract {
             storage::index_by_beneficiary(&env, &beneficiary.address, will_id);
         }
 
-        let (primary_token, primary_balance) = tokens.get_unchecked(0);
-
         let will = Will {
             id: will_id,
             owner: owner.clone(),
             balances,
             token: primary_token,
             is_native: false,
-            balance: primary_balance,
+            balance: primary_amount,
             beneficiaries: source.beneficiaries.clone(),
             hashed_beneficiaries: Vec::new(&env),
             checkin_period_days: source.checkin_period_days,
@@ -2330,7 +2364,14 @@ impl WillContract {
                 balances.set(token_addr, prev + amount);
             }
 
-            assert_valid_allocations(&env, &beneficiaries, total_balance(&balances));
+            // Fixed amounts are denominated in the primary token, the first
+            // entry of `tokens` (#384).
+            let (primary_token, primary_amount) = tokens.get_unchecked(0);
+            assert_valid_allocations(
+                &env,
+                &beneficiaries,
+                primary_token_balance(&balances, &primary_token),
+            );
 
             let mut guardian_structs: Vec<Guardian> = Vec::new(&env);
             for addr in guardians.iter() {
@@ -2349,15 +2390,13 @@ impl WillContract {
                 storage::index_by_beneficiary(&env, &beneficiary.address, will_id);
             }
 
-            let (primary_token, primary_balance) = tokens.get_unchecked(0);
-
             let will = Will {
                 id: will_id,
                 owner: owner.clone(),
                 balances,
                 token: primary_token,
                 is_native: false,
-                balance: primary_balance,
+                balance: primary_amount,
                 beneficiaries,
                 hashed_beneficiaries: Vec::new(&env),
                 checkin_period_days,
@@ -2802,8 +2841,16 @@ impl WillContract {
         // balance before committing anything (#239): a split funded with
         // less than the original fixed-amount commitments must fail loudly
         // here rather than silently under-paying at distribute() time.
-        assert_valid_allocations(&env, &normalised_remaining, total_balance(&source.balances));
-        assert_valid_allocations(&env, &normalised_split, total_balance(&child_balances));
+        assert_valid_allocations(
+            &env,
+            &normalised_remaining,
+            primary_token_balance(&source.balances, &source.token),
+        );
+        assert_valid_allocations(
+            &env,
+            &normalised_split,
+            primary_token_balance(&child_balances, &primary_token),
+        );
 
         // Remove split-off beneficiaries from the source index and add them to
         // the child's index.
@@ -3089,7 +3136,8 @@ fn names_address(beneficiaries: &Vec<Beneficiary>, address: &Address) -> bool {
 }
 
 /// Asserts a beneficiary list's allocations are internally consistent and
-/// affordable against `will_balance`:
+/// affordable against `primary_balance`, the will's balance in its primary
+/// token ([`Will::token`]):
 ///
 /// - No address may appear more than once (the beneficiary index only stores
 ///   one entry per address, so a repeat would silently drop one of the
@@ -3099,12 +3147,17 @@ fn names_address(beneficiaries: &Vec<Beneficiary>, address: &Address) -> bool {
 ///   whatever remains once fixed amounts are set aside) — this guarantees
 ///   every token balance is fully distributed with no dust left behind.
 /// - Every `Allocation::FixedAmount` must be positive, and the sum of every
-///   fixed amount on the will must never exceed `will_balance` — otherwise
-///   `distribute` could not pay every fixed beneficiary in full.
+///   fixed amount on the will must never exceed `primary_balance` —
+///   otherwise `distribute` could not pay every fixed beneficiary in full.
+///   Fixed amounts are denominated in the primary token only, so this is
+///   deliberately *not* the sum across every token the will holds (#384):
+///   comparing against a sum of unrelated tokens (with unrelated decimals)
+///   would approve a will that `distribute` cannot pay out in full.
 /// - A will made up entirely of `FixedAmount` beneficiaries (no percentage
-///   beneficiaries at all) must account for the *whole* balance, since
-///   nobody is left to receive a "remainder" split.
-fn assert_valid_allocations(env: &Env, beneficiaries: &Vec<Beneficiary>, will_balance: i128) {
+///   beneficiaries at all) is allowed to account for less than the whole
+///   balance; the unallocated remainder is refunded to the owner at
+///   distribute time rather than left stranded in the contract (#383).
+fn assert_valid_allocations(env: &Env, beneficiaries: &Vec<Beneficiary>, primary_balance: i128) {
     let mut percentage_total: u32 = 0;
     let mut fixed_total: i128 = 0;
     let mut has_percentage = false;
@@ -3133,26 +3186,31 @@ fn assert_valid_allocations(env: &Env, beneficiaries: &Vec<Beneficiary>, will_ba
         }
     }
 
-    if fixed_total > will_balance {
+    if fixed_total > primary_balance {
         panic_with_error!(env, WillError::FixedAmountExceedsBalance);
     }
     if has_percentage && percentage_total != 10_000 {
         panic_with_error!(env, WillError::InvalidPercentages);
     }
     // A FixedAmount-only list is deliberately allowed to leave a portion of
-    // `will_balance` unaccounted for (fixed_total < will_balance): that
+    // `primary_balance` unaccounted for (fixed_total < primary_balance): that
     // headroom is exactly what a later `add_hashed_beneficiary` call
-    // reserves for a not-yet-disclosed beneficiary (#181/#186). It is never
-    // silently orphaned -- `distribute()` only pays out fixed_total's worth
-    // to visible beneficiaries and withholds the rest for hashed claims (or,
-    // if no hashed beneficiary is ever added, it simply stays unclaimed).
+    // reserves for a not-yet-disclosed beneficiary (#181/#186). If no hashed
+    // beneficiary is ever added, `distribute()` still returns whatever the
+    // fixed amounts did not claim to the owner instead of stranding it in
+    // the contract (#383). Any secondary token's whole balance is likewise
+    // refunded, since fixed amounts are denominated in the primary token
+    // only (#384).
 }
 
 /// Rescales every `Allocation::Percentage` entry in `beneficiaries` so they
 /// sum to exactly 10,000 bps again, proportionally to their current shares
 /// (the last percentage entry absorbs any rounding remainder).
 /// `Allocation::FixedAmount` entries pass through unchanged.
-pub(crate) fn renormalize_percentages(env: &Env, beneficiaries: &Vec<Beneficiary>) -> Vec<Beneficiary> {
+pub(crate) fn renormalize_percentages(
+    env: &Env,
+    beneficiaries: &Vec<Beneficiary>,
+) -> Vec<Beneficiary> {
     let mut percentage_total: u32 = 0;
     let mut percentage_count: u32 = 0;
     for b in beneficiaries.iter() {
@@ -3237,17 +3295,14 @@ fn total_checked_add(total: &mut u32, value: u32, env: &Env) {
     };
 }
 
-/// Sums every token balance in `balances` into a single `i128`, saturating
-/// rather than overflowing. Used to validate `Allocation::FixedAmount`
-/// entries against "the will's balance" in the simplified single-balance
-/// sense described in the `Allocation` docs: a fixed amount is available
-/// against the combined value locked across all of a will's tokens.
-fn total_balance(balances: &Map<Address, i128>) -> i128 {
-    let mut total: i128 = 0;
-    for (_, amount) in balances.iter() {
-        total = total.saturating_add(amount);
-    }
-    total
+/// Returns `balances`' entry for `primary_token`, or 0 when the will holds
+/// none of it. This — not [`total_balance`] — is the value
+/// `Allocation::FixedAmount` entries are denominated in and validated
+/// against: a fixed amount is a claim on the will's primary token, and
+/// adding up units of unrelated tokens (with unrelated decimals) would let a
+/// will be approved that `distribute` cannot pay out in full (#384).
+fn primary_token_balance(balances: &Map<Address, i128>, primary_token: &Address) -> i128 {
+    balances.get(primary_token.clone()).unwrap_or(0)
 }
 
 /// Asserts a guardian list is no longer than [`MAX_GUARDIANS`] and contains no
@@ -3290,41 +3345,6 @@ fn assert_valid_periods(env: &Env, checkin_period_days: u64, grace_period_days: 
     }
 }
 
-/// Distributes all token balances across `will.beneficiaries` proportionally
-/// to their basis-point shares, transfers the shares out of the contract,
-/// clears the balances map, marks the will `Released`, and publishes the
-/// `InheritanceReleased` event.
-///
-/// # Rounding Behavior
-///
-/// Each token's distribution is calculated as: `share = balance * (basis_points / 10_000)`.
-/// Integer division truncates toward zero, which may result in zero shares for
-/// beneficiaries with very small calculated amounts. For example, distributing 9 units
-/// equally among 10 beneficiaries (900 basis points each) gives each person 0.9 units,
-/// which truncates to 0.
-///
-/// To ensure no dust is left behind, any rounding remainder is paid to the final
-/// beneficiary in the list. This guarantees the full balance of every token is
-/// always distributed across beneficiaries.
-///
-/// **Note:** Callers should ensure that the will's balance is sufficient to give
-/// each beneficiary at least 1 unit of their share. Extremely small balances relative
-/// to beneficiary counts can result in most recipients getting zero after rounding.
-/// Consider validating a minimum will amount at creation time (see issue #37).
-/// Splits `will.balance` across `will.beneficiaries` proportionally to their
-/// percentages, transfers the shares out of the contract, marks the will
-/// `Released`, and publishes the `InheritanceReleased` event with a full
-/// For each token in `will.balances`, splits the balance across
-/// `will.beneficiaries` proportionally to their basis-point shares, transfers
-/// the shares out of the contract, clears the balances map, marks the will
-/// `Released`, and publishes the `InheritanceReleased` event. Any rounding
-/// remainder from integer division is paid to the final beneficiary so the
-/// full balance of every token is always distributed with no dust left behind.
-///
-/// Follows checks-effects-interactions ordering: all per-beneficiary share
-/// amounts are computed from the pre-mutation balances, then all state is
-/// committed (status, balances, indexes), and only then are the external
-/// token transfers executed.
 /// Calculates `floor(total * basis_points / 10_000)` without ever forming
 /// the potentially overflowing `total * basis_points` intermediate. The
 /// workspace release profile enables overflow checks, but this decomposition
@@ -3337,6 +3357,58 @@ pub(crate) fn proportional_share(total: i128, basis_points: u32) -> i128 {
     whole * basis_points as i128 + remainder * basis_points as i128 / BASIS_POINTS_TOTAL
 }
 
+/// Pays out every token balance the will holds, marks the will `Released`,
+/// and publishes the `InheritanceReleased` event.
+///
+/// For each token in `will.balances` the balance is split as follows:
+///
+/// 1. The keeper bounty (`will.keeper_bounty_bps`), taken out of the first
+///    token with a non-zero balance, when a non-owner keeper released the
+///    will (#297).
+/// 2. The reserve for hashed beneficiaries that have not yet called
+///    `reveal_and_claim` (#181/#186). It is withheld from the visible
+///    beneficiaries and left in `will.balances` for later claiming.
+/// 3. `Allocation::FixedAmount` beneficiaries, which are denominated in the
+///    will's *primary* token (`will.token`) only — a `FixedAmount(100)`
+///    beneficiary on a two-token will receives 100 units of the primary
+///    token in total, not 100 units of every token it holds (#384). Every
+///    other token's whole balance is therefore available to step 4.
+/// 4. `Allocation::Percentage` beneficiaries, which split whatever remains of
+///    each token by basis point. The last percentage beneficiary absorbs the
+///    integer-division remainder, so no dust is left behind (#190).
+///
+/// # Rounding
+///
+/// Each token's distribution is calculated as
+/// `share = balance * (basis_points / 10_000)`. Integer division truncates
+/// toward zero, which may result in zero shares for beneficiaries with very
+/// small calculated amounts: distributing 9 units equally among 10
+/// beneficiaries (900 bp each) gives each 0.9 units, which truncates to 0.
+/// The remainder is paid to the final percentage beneficiary, which
+/// guarantees the full balance of every token is always distributed.
+///
+/// **Note:** Callers should ensure that the will's balance is sufficient to
+/// give each beneficiary at least 1 unit of their share. Extremely small
+/// balances relative to beneficiary counts can result in most recipients
+/// getting zero after rounding. Consider validating a minimum will amount at
+/// creation time (see issue #37).
+///
+/// # Leftover value
+///
+/// If a will has **no** percentage beneficiaries (a `FixedAmount`-only will,
+/// which `assert_valid_allocations` deliberately allows to be
+/// under-allocated) the value left over after the fixed amounts have been
+/// paid has no beneficiary left to receive it. Rather than leaving those
+/// tokens stranded in the contract with no accounting and no withdrawal path
+/// once the will is `Released`, the remainder of every token is refunded to
+/// the will's owner and reported via [`events::leftover_refunded`] (#383).
+/// The refund is a no-op for wills that do have percentage beneficiaries,
+/// since the last one already absorbs the whole remainder.
+///
+/// Follows checks-effects-interactions ordering: all per-beneficiary share
+/// amounts (and the owner refund) are computed from the pre-mutation
+/// balances, then all state is committed (status, balances, indexes), and
+/// only then are the external token transfers executed.
 fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
     let contract_address = env.current_contract_address();
     let count = will.beneficiaries.len();
@@ -3353,6 +3425,21 @@ fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
     // Build a Vec of (token_addr, Vec<(beneficiary_addr, share)>) so we can
     // commit all state before any external call fires.
     let mut transfer_plan: Vec<(Address, Vec<(Address, i128)>)> = Vec::new(env);
+
+    // Per-token amounts refunded to the owner because no beneficiary was left
+    // to receive them (#383). See the "Leftover value" section of this
+    // function's docs.
+    let mut refund_plan: Vec<(Address, i128)> = Vec::new(env);
+
+    // Counted once up front rather than re-scanned per token: the count is the
+    // same for every token, and the percentage loop below needs it to know
+    // which beneficiary absorbs the rounding remainder.
+    let mut percentage_count: u32 = 0;
+    for beneficiary in will.beneficiaries.iter() {
+        if let Allocation::Percentage(_) = beneficiary.allocation {
+            percentage_count += 1;
+        }
+    }
 
     // Any beneficiary added via `add_hashed_beneficiary` who has not yet
     // called `reveal_and_claim` has a standing claim on this fraction of
@@ -3382,27 +3469,29 @@ fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
 
         let mut shares: Vec<(Address, i128)> = Vec::new(env);
 
-        // Fixed-amount beneficiaries are paid first, capped at what is
-        // actually available so a misconfigured/under-funded token never
-        // aborts the whole distribution.
+        // Fixed amounts are denominated in the will's primary token only
+        // (#384): a `FixedAmount(100)` on a two-token will is 100 units of
+        // `will.token` in total, not 100 units of every token the will holds.
+        // Any other token's whole balance is available to the percentage
+        // split below.
+        //
+        // The amounts are capped at what is actually available so a
+        // misconfigured/under-funded will never aborts the whole
+        // distribution.
         let mut remaining = available;
-        for beneficiary in will.beneficiaries.iter() {
-            if let Allocation::FixedAmount(amt) = beneficiary.allocation {
-                let share = amt.min(remaining).max(0);
-                remaining -= share;
-                shares.push_back((beneficiary.address.clone(), share));
+        if token_addr == will.token {
+            for beneficiary in will.beneficiaries.iter() {
+                if let Allocation::FixedAmount(amt) = beneficiary.allocation {
+                    let share = amt.min(remaining).max(0);
+                    remaining -= share;
+                    shares.push_back((beneficiary.address.clone(), share));
+                }
             }
         }
 
         // Whatever remains is split among percentage-based beneficiaries,
         // proportionally to their basis points; the final one absorbs the
         // rounding remainder so no dust is left behind.
-        let mut percentage_count: u32 = 0;
-        for beneficiary in will.beneficiaries.iter() {
-            if let Allocation::Percentage(_) = beneficiary.allocation {
-                percentage_count += 1;
-            }
-        }
         let mut percentage_index: u32 = 0;
         let mut percentage_remaining = remaining;
         for beneficiary in will.beneficiaries.iter() {
@@ -3417,6 +3506,14 @@ fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
                 };
                 shares.push_back((beneficiary.address.clone(), share));
             }
+        }
+
+        // With no percentage beneficiaries there is nobody left to absorb what
+        // the fixed amounts did not claim. Refunding it to the owner keeps the
+        // tokens from being stranded in the contract with no accounting and no
+        // withdrawal path once the will is `Released` (#383).
+        if percentage_count == 0 && remaining > 0 {
+            refund_plan.push_back((token_addr.clone(), remaining));
         }
 
         transfer_plan.push_back((token_addr, shares));
@@ -3443,6 +3540,13 @@ fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
     storage::save_will(env, will);
 
     // --- INTERACTIONS: external token transfers execute after state is settled ---
+    for (token_addr, amount) in refund_plan.iter() {
+        if amount > 0 {
+            token::Client::new(env, &token_addr).transfer(&contract_address, &will.owner, &amount);
+            events::leftover_refunded(env, will.id, &token_addr, &will.owner, amount);
+        }
+    }
+
     for (token_addr, shares) in transfer_plan.iter() {
         let token_client = token::Client::new(env, &token_addr);
         for (beneficiary_addr, share) in shares.iter() {
