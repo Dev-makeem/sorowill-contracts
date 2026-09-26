@@ -97,4 +97,9 @@ pub enum WillError {
     /// Cannot merge: the two wills' primary tokens differ, so summing their
     /// legacy `balance` fields would be nonsensical.
     PrimaryTokenMismatch = 39,
+    /// The same token address was supplied more than once in a `tokens`
+    /// list. `create_will` documents each token address as unique, and a
+    /// duplicated entry would make the legacy `balance` mirror disagree with
+    /// the accumulated `balances` map (#350).
+    DuplicateToken = 40,
 }
