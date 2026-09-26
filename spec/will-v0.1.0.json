@@ -33,6 +33,7 @@
     { "name": "migrate_will", "inputs": ["will_id: u64", "owner: Address"], "output": "()" },
     { "name": "merge_wills", "inputs": ["will_id_a: u64", "will_id_b: u64", "owner: Address"], "output": "u64" },
     { "name": "get_will_history", "inputs": ["will_id: u64"], "output": "Vec<WillStatusTransition>" },
+    { "name": "get_will_history_page", "inputs": ["will_id: u64", "cursor: Option<u32>", "limit: u32"], "output": "Vec<WillStatusTransition>" },
     { "name": "archive_will", "inputs": ["will_id: u64"], "output": "()" }
   ],
   "types": {

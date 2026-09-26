@@ -2719,10 +2719,57 @@ impl WillContract {
         );
     }
 
-    /// Returns the full audit trail for `will_id`, recording every status
+    /// Returns the audit trail for `will_id`, recording every status
     /// transition since creation.
+    ///
+    /// # Bounded length
+    ///
+    /// The retained trail holds at most [`storage::MAX_HISTORY_ENTRIES`]
+    /// transitions. Once a will exceeds that many — a long-lived will cycling
+    /// `Active` → `Triggered` → `Active` through repeated emergency check-ins —
+    /// the **oldest** entry is dropped to make room, so this always returns the
+    /// most recent transitions, oldest-first. The cap keeps the persistent
+    /// `WillHistory` entry inside Soroban's per-entry size limit and keeps this
+    /// read bounded (#392).
+    ///
+    /// For the full, untrimmed history, follow the off-chain event log: every
+    /// state-mutating entry point publishes an event, and that log is never
+    /// trimmed. Callers who want to walk the retained trail in bounded slices
+    /// should prefer [`WillContract::get_will_history_page`].
     pub fn get_will_history(env: Env, will_id: u64) -> Vec<WillStatusTransition> {
         storage::get_history(&env, will_id)
+    }
+
+    /// Returns a bounded page of `will_id`'s audit trail, oldest-first.
+    ///
+    /// The paged counterpart to [`WillContract::get_will_history`], for callers
+    /// that would rather not pull the whole retained trail in one call. The
+    /// trail is itself capped at [`storage::MAX_HISTORY_ENTRIES`] transitions
+    /// (#392); this bounds the *per-call* cost on top of that.
+    ///
+    /// # Parameters
+    /// - `will_id`: the will whose trail to read.
+    /// - `cursor`: optional zero-based offset into the trail. Pass `None` or `0`
+    ///   for the first page.
+    /// - `limit`: maximum number of transitions to return. Capped at
+    ///   [`storage::MAX_PAGE_SIZE`].
+    ///
+    /// # Pagination
+    /// 1. Call with `cursor=None, limit=N`.
+    /// 2. If the page has `N` entries, call again with `cursor = offset + N`.
+    /// 3. Repeat until a page comes back shorter than `N`.
+    ///
+    /// The cursor is positional, not keyed. It is stable for the duration of a
+    /// walk as long as no transition is appended past the cursor, but a
+    /// concurrent write that trips the history cap trims the front of the
+    /// trail and shifts every earlier offset — restart the walk in that case.
+    pub fn get_will_history_page(
+        env: Env,
+        will_id: u64,
+        cursor: Option<u32>,
+        limit: u32,
+    ) -> Vec<WillStatusTransition> {
+        storage::paginate_history(&env, will_id, cursor, limit)
     }
 
     /// Archives a Released or Cancelled will, removing it from active
