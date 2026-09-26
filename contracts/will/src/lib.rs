@@ -31,7 +31,9 @@
 //! time (or via [`WillContract::update_guardians`]) and may vote once the
 //! guardian-list cooldown has elapsed. Guardian
 //! votes expire after a configurable window so stale votes cannot combine
-//! with fresh ones.
+//! with fresh ones: when a vote ages out and the same guardian votes again,
+//! the new vote *replaces* the expired one rather than adding to it, so one
+//! guardian can never reach the quorum threshold alone (#372).
 //!
 //! Two distribution modes are supported:
 //! - **Push mode** (default): `distribute` transfers tokens directly to each
@@ -160,6 +162,12 @@ mod issue_299_test;
 #[cfg(test)]
 mod issue_guardian_vote_underflow_test;
 
+/// Regression tests for issue #372: expired guardian votes are dropped from the
+/// `guardian_vote_weight` / `guardian_votes` tallies in both
+/// `guardian_trigger` and `guardian_cancel_trigger`.
+#[cfg(test)]
+mod issue_372_test;
+
 // The following test modules exist as files but were never wired into this
 // module tree by the PRs that added them, so they silently never compiled or
 // ran under `cargo test`.
@@ -264,7 +272,7 @@ pub use types::{
 /// [`WillContract::get_contract_version`].
 ///
 /// Current baseline: **1.0.0** → `1_000_000`.
-pub const CONTRACT_VERSION: u32 = 1_000_000;
+pub const CONTRACT_VERSION: u32 = 1_000_001;
 
 /// Number of seconds in a day, used to convert the day-denominated periods
 /// stored on a `Will` into absolute ledger timestamps.
@@ -339,7 +347,7 @@ soroban_sdk::contractmeta!(
 // issue_272_test.rs; bump both together.
 soroban_sdk::contractmeta!(
     key = "Version",
-    val = "1.0.0"
+    val = "1.0.1"
 );
 soroban_sdk::contractmeta!(
     key = "Homepage",
@@ -1866,6 +1874,17 @@ impl WillContract {
     /// - [`WillError::NotGuardian`] if `guardian` is not one of the will's guardians.
     /// - [`WillError::AlreadyVoted`] if `guardian` already voted in this cycle.
     /// - [`WillError::GuardianCooldownActive`] if the guardian-list cooldown has not elapsed.
+    ///
+    /// # Vote expiry and recounting
+    ///
+    /// A vote stops counting once it is older than the will's
+    /// `grace_period_days`, after which the same guardian may vote again. When
+    /// they do, the accumulated `guardian_vote_weight` / `guardian_votes` are
+    /// **recomputed from the vote records that are still live**, so the new vote
+    /// replaces the expired one rather than being added on top of it (#372). One
+    /// guardian therefore cannot reach `guardian_threshold` alone by voting once
+    /// per expiry window. The same recounting applies to
+    /// [`guardian_cancel_trigger`]'s cancel-vote counters.
     pub fn guardian_trigger(env: Env, will_id: u64, guardian: Address, reason: GuardianVoteReason) {
         guardian.require_auth();
         let mut will = load_will(&env, will_id);
@@ -1895,8 +1914,15 @@ impl WillContract {
         }
 
         storage::set_guardian_voted(&env, will_id, &guardian, now, reason);
-        will.guardian_vote_weight += weight;
-        will.guardian_votes += 1;
+        // Recount from the vote records that are still live rather than adding
+        // to the persisted counters: a record that has already aged past the
+        // expiry window no longer counts, so voting again after expiry replaces
+        // the old vote rather than stacking on top of it (#372). Without this a
+        // single guardian could vote once per grace period and reach the
+        // threshold alone.
+        let (live_weight, live_votes) = storage::recount_guardian_votes(&env, &will, now, expiry_days);
+        will.guardian_vote_weight = live_weight;
+        will.guardian_votes = live_votes;
         storage::save_will(&env, &will);
 
         events::guardian_voted(&env, will_id, &guardian, weight, will.guardian_vote_weight);
@@ -1976,8 +2002,13 @@ impl WillContract {
         }
 
         storage::set_guardian_cancel_voted(&env, will_id, &guardian, now);
-        will.guardian_cancel_vote_weight += weight;
-        will.guardian_cancel_votes += 1;
+        // Same recount-from-live-records rule as `guardian_trigger`: an expired
+        // cancel vote is replaced, not accumulated, so one guardian cannot reach
+        // the cancel threshold alone by voting once per grace period (#372).
+        let (live_weight, live_votes) =
+            storage::recount_guardian_cancel_votes(&env, &will, now, expiry_days);
+        will.guardian_cancel_vote_weight = live_weight;
+        will.guardian_cancel_votes = live_votes;
         storage::save_will(&env, &will);
 
         events::guardian_cancel_voted(

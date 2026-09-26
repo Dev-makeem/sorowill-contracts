@@ -10,6 +10,15 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ## [Unreleased]
 
+### Fixed
+
+- `guardian_trigger` and `guardian_cancel_trigger` now recompute
+  `guardian_vote_weight` / `guardian_votes` (and their cancel-vote
+  counterparts) from the vote records that are still live instead of adding
+  to the persisted counters (#372). A vote older than the will's grace period
+  is replaced rather than accumulated, so a single guardian can no longer
+  reach `guardian_threshold` alone by voting once per expiry window.
+
 ### Removed
 
 - Removed unused `InvalidPercentage` (code 22) error variant from `WillError`.
