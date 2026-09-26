@@ -443,6 +443,13 @@ pub fn index_triggered_will(env: &Env, will_id: u64) {
 /// `emergency_checkin` or `release_inheritance`). Returns without writing
 /// when the id is not in the list, so the common case costs a read instead
 /// of a read plus a rewrite.
+///
+/// Refreshes the TTL after a successful write, matching
+/// [`index_triggered_will`] and the other removal helpers (`#69`). Without
+/// it, a period in which *only* Triggered wills leave the index never renews
+/// the `TriggeredWills` entry, so an index that is exclusively pruned — the
+/// steady state of a long-running protocol — would slowly walk its TTL down
+/// to zero and take the remaining still-Triggered ids with it.
 pub fn unindex_triggered_will(env: &Env, will_id: u64) {
     let key = DataKey::TriggeredWills;
     let Some(mut ids) = env.storage().persistent().get::<_, Vec<u64>>(&key) else {
@@ -453,6 +460,9 @@ pub fn unindex_triggered_will(env: &Env, will_id: u64) {
     };
     ids.remove_unchecked(index);
     env.storage().persistent().set(&key, &ids);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
 }
 
 /// Returns the full list of will ids currently in `Triggered` status.

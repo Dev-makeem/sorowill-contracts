@@ -10,6 +10,14 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ## [Unreleased]
 
+### Fixed
+
+- `unindex_triggered_will` now extends the TTL of the `TriggeredWills` index
+  entry after a successful write, matching `index_triggered_will` and the other
+  removal helpers. A period containing only removals (wills leaving `Triggered`
+  with none entering) previously never renewed the entry, so a long-running,
+  prune-only workload could walk its TTL down to zero (#391).
+
 ### Removed
 
 - Removed unused `InvalidPercentage` (code 22) error variant from `WillError`.
