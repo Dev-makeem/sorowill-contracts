@@ -25,7 +25,7 @@ SoroWill is a trustless, on-chain inheritance protocol for Stellar Soroban. It l
 5. **Release.** If the grace period expires without an emergency check-in, anyone can call `release_inheritance`, which distributes the locked balance to every beneficiary proportionally, in one transaction.
 6. **Cancel anytime.** While the will is active, the owner can call `cancel_will` to withdraw the full balance.
 7. **Update beneficiaries.** While active, the owner can call `update_beneficiaries` to change who inherits and in what proportions.
-8. **Guardian override.** A will can name up to 3 guardians. Any 2 of them calling `guardian_trigger` force an immediate release — useful if the owner is known to be incapacitated rather than simply inactive. See [docs/adr/0001-guardian-threshold.md](./docs/adr/0001-guardian-threshold.md) for the rationale behind the 2-of-3 default, its known limitations, and how it relates to the proposed configurable M-of-N guardian feature.
+8. **Guardian override.** A will can name up to 3 guardians. Once the will's guardian threshold is reached (2 by default, configurable per will), their `guardian_trigger` calls force an immediate release — useful if the owner is known to be incapacitated rather than simply inactive. See [docs/adr/0001-guardian-threshold.md](./docs/adr/0001-guardian-threshold.md) for the rationale behind the 2-of-3 default, its known limitations, and how it relates to the proposed configurable M-of-N guardian feature.
 
 ## Tech Stack
 
@@ -42,8 +42,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # Add the Soroban wasm target
 rustup target add wasm32v1-none
 
-# Install the Stellar CLI
-cargo install --locked stellar-cli --features opt
+# Install the Stellar CLI (>= 22.0.0)
+cargo install --locked stellar-cli
 
 # Clone and test
 git clone https://github.com/SoroWill/sorowill-contracts.git
@@ -107,11 +107,11 @@ The following limits are defined as `pub const` in `lib.rs` and re-exported from
 | Constant | Value | Meaning |
 |---|---|---|
 | `MAX_BENEFICIARIES` | `10` | Maximum number of beneficiaries per will |
-| `MAX_GUARDIANS` | `3` | Maximum number of guardians per will |
-| `GUARDIAN_THRESHOLD` | `2` | Default number of guardian votes required to force an early release |
+| `MAX_GUARDIANS` | `3` | Maximum number of guardians per will (private to the crate, not exported) |
+| `GUARDIAN_THRESHOLD` | `2` | Default number of guardian votes required to force an early release (private to the crate, not exported) |
 
 ```rust
-use will::{MAX_BENEFICIARIES, MAX_GUARDIANS, GUARDIAN_THRESHOLD};
+use will::MAX_BENEFICIARIES;
 ```
 
 ## Contract Functions
