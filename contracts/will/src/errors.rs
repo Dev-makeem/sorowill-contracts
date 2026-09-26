@@ -97,4 +97,12 @@ pub enum WillError {
     /// Cannot merge: the two wills' primary tokens differ, so summing their
     /// legacy `balance` fields would be nonsensical.
     PrimaryTokenMismatch = 39,
+    /// The token list supplied to a will-creation or split entry point was
+    /// empty, or contained more entries than `MAX_TOKENS`.
+    ///
+    /// Raised instead of [`WillError::TooManyBeneficiaries`] for token-list
+    /// problems so the failure is self-explanatory: an empty list is not "too
+    /// many" of anything, and a caller who passed eleven tokens and two
+    /// beneficiaries deserves to be told which list was at fault (#390).
+    InvalidTokenCount = 40,
 }

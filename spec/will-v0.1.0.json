@@ -79,6 +79,9 @@
     { "code": 17, "name": "OwnerCannotBeGuardian" },
     { "code": 18, "name": "BeneficiaryNotFound" },
     { "code": 19, "name": "KeeperBountyExceedsMax" },
-    { "code": 20, "name": "InvalidGuardianThreshold" }
+    { "code": 20, "name": "InvalidGuardianThreshold" },
+    { "code": 38, "name": "GuardianNotConsented" },
+    { "code": 39, "name": "PrimaryTokenMismatch" },
+    { "code": 40, "name": "InvalidTokenCount" }
   ]
 }

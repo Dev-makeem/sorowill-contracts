@@ -10,6 +10,14 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ## [Unreleased]
 
+### Added
+
+- New `WillError::InvalidTokenCount` (code 40) returned when the token list
+  passed to `create_will`, `clone_will`, `split_will`, or
+  `batch_create_wills` is empty or longer than `MAX_TOKENS`. Previously these
+  checks reported `TooManyBeneficiaries`, which named the wrong list and
+  described an empty list as "too many" (#390).
+
 ### Removed
 
 - Removed unused `InvalidPercentage` (code 22) error variant from `WillError`.
