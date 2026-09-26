@@ -3136,11 +3136,35 @@ impl WillContract {
     /// - `will_id`: the will to add the hashed beneficiary to.
     /// - `owner`: must be the primary owner.
     /// - `commitment`: SHA-256 hash of the pre-image `address_bytes || salt_bytes`.
-    /// - `percentage`: share of the will's balance for this beneficiary.
+    ///   Must be exactly 32 bytes — see the validation rules below.
+    /// - `percentage`: share of the will's balance for this beneficiary, in
+    ///   basis points. Must be greater than zero.
+    ///
+    /// # Validation
+    ///
+    /// A commitment is only useful if some pre-image can ever hash to it, and
+    /// only claimable if exactly one slot matches it, so this entry point
+    /// rejects three shapes that would otherwise strand a reserved share
+    /// forever (#371):
+    ///
+    /// - A `commitment` that is not exactly 32 bytes cannot be a SHA-256
+    ///   digest, so no pre-image can ever match it
+    ///   ([`WillError::InvalidCommitmentLength`]).
+    /// - A `commitment` already present on this will is rejected
+    ///   ([`WillError::DuplicateCommitment`]): [`reveal_and_claim`] always
+    ///   matches the *first* slot, so the second would be unclaimable.
+    /// - A `percentage` of 0 reserves no funds but still occupies a slot and
+    ///   dilutes every other hashed beneficiary's share of the withheld pool
+    ///   ([`WillError::InvalidPercentages`]), mirroring how
+    ///   `assert_valid_allocations` rejects a zero percentage for a visible
+    ///   beneficiary.
     ///
     /// # Panics
     /// - [`WillError::NotOwner`] / [`WillError::WillNotActive`]
-    /// - [`WillError::InvalidPercentages`] if total percentages would exceed 100.
+    /// - [`WillError::InvalidCommitmentLength`] if `commitment` is not exactly 32 bytes.
+    /// - [`WillError::DuplicateCommitment`] if `commitment` is already registered on this will.
+    /// - [`WillError::InvalidPercentages`] if `percentage` is zero, or if total
+    ///   percentages would exceed 100.
     pub fn add_hashed_beneficiary(
         env: Env,
         will_id: u64,
@@ -3151,6 +3175,15 @@ impl WillContract {
         owner.require_auth();
         let mut will = load_owned(&env, will_id, &owner);
         assert_status(&env, &will, WillStatus::Active, WillError::WillNotActive);
+
+        // Validate the new slot before mutating the will, so a rejected call
+        // leaves no partial state behind (#371).
+        assert_valid_hashed_beneficiary(
+            &env,
+            &will.hashed_beneficiaries,
+            &commitment,
+            percentage,
+        );
 
         will.hashed_beneficiaries.push_back(HashedBeneficiary {
             commitment: commitment.clone(),
@@ -3428,6 +3461,51 @@ fn assert_valid_allocations(env: &Env, beneficiaries: &Vec<Beneficiary>, primary
     // the contract (#383). Any secondary token's whole balance is likewise
     // refunded, since fixed amounts are denominated in the primary token
     // only (#384).
+}
+
+/// Byte length of a SHA-256 digest, i.e. of a `HashedBeneficiary` commitment.
+///
+/// A commitment of any other length cannot be the output of
+/// `env.crypto().sha256`, so no pre-image could ever match it and the reserved
+/// share would be stuck forever (#371).
+const SHA256_DIGEST_LEN: u32 = 32;
+
+/// Validates a candidate hashed-beneficiary slot against the slots already on
+/// the will, before it is appended by [`WillContract::add_hashed_beneficiary`].
+///
+/// Enforces the three rules that keep every reserved share claimable (#371):
+/// the commitment is exactly [`SHA256_DIGEST_LEN`] bytes, it is not already
+/// present on the will, and the percentage is non-zero. This mirrors what
+/// [`assert_valid_allocations`] does for visible beneficiaries — reject zero
+/// percentages and duplicate addresses — extended to the commitment instead of
+/// an address.
+///
+/// The percentage *total* is checked separately by
+/// [`assert_valid_percentages`], which needs the visible beneficiaries too and
+/// runs once the new slot is on the will.
+fn assert_valid_hashed_beneficiary(
+    env: &Env,
+    existing: &Vec<HashedBeneficiary>,
+    commitment: &Bytes,
+    percentage: u32,
+) {
+    if commitment.len() != SHA256_DIGEST_LEN {
+        panic_with_error!(env, WillError::InvalidCommitmentLength);
+    }
+    // `reveal_and_claim` stops at the first matching slot and then reports
+    // `AlreadyClaimed`, so a second slot with the same commitment could never
+    // be reached by anyone.
+    for hb in existing.iter() {
+        if hb.commitment == *commitment {
+            panic_with_error!(env, WillError::DuplicateCommitment);
+        }
+    }
+    // A zero percentage reserves nothing yet still occupies a slot, and
+    // `unclaimed_hashed_bps` counts it in the denominator of every other
+    // hashed beneficiary's share — so it silently dilutes them.
+    if percentage == 0 {
+        panic_with_error!(env, WillError::InvalidPercentages);
+    }
 }
 
 /// Rescales every `Allocation::Percentage` entry in `beneficiaries` so they
