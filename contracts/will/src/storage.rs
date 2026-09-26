@@ -773,6 +773,33 @@ pub fn paginate_history(
 /// Archives a will by moving it to the archived storage and removing it from
 /// active storage and indexes. The archived will's TTL is not extended, so it
 /// will eventually be garbage-collected by Soroban's state archival system.
+///
+/// # History and guardian votes do not survive archival
+///
+/// Archival drops the will's `WillHistory` entry and every `GuardianVote` /
+/// `GuardianCancelVote` entry belonging to its guardians, rather than leaving
+/// them to outlive the will (#393). This is a deliberate decision, not an
+/// oversight:
+///
+/// - **The entries would be unreachable anyway.** `load_will` only ever reads
+///   the `Will` key, so a retained `WillHistory` entry describes a will no
+///   query can resolve — `get_will_history` is the sole reader, and the
+///   archived will it describes is not loadable. Keeping it costs rent for an
+///   orphan.
+/// - **They keep occupying ledger state until they expire.** A history entry
+///   and up to `MAX_GUARDIANS` vote entries per cycle survive for the ~60 days
+///   their last TTL bump bought them. An attacker cannot profit from that, but
+///   a permissionless caller triggering archival on many settled wills would
+///   strand the entries of all of them at once.
+/// - **The off-chain record is the durable one.** Every state-mutating entry
+///   point publishes an event, and the archived `Will` itself retains the final
+///   status, balances, and parties until Soroban's state archival collects it.
+///   On-chain history is a convenience for the live lifecycle, not the
+///   permanent audit record.
+///
+/// Consumers that read history after archival — the `archive_will` docs point
+/// at the audit trail as a post-release recovery path — must use the off-chain
+/// event log instead. That guidance is updated there to match.
 pub fn archive_will(env: &Env, will: &Will) {
     // Move will to archived storage (no TTL extension)
     let archival_key = DataKey::ArchivedWill(will.id);
@@ -797,4 +824,29 @@ pub fn archive_will(env: &Env, will: &Will) {
     for beneficiary in will.beneficiaries.iter() {
         remove_beneficiary_index(env, &beneficiary.address, will.id);
     }
+
+    // Drop the per-will auxiliary entries, which `save_will` and
+    // `reset_guardian_votes` only clean up while the will is still live. Left
+    // behind, they would point at a will that `load_will` can no longer
+    // resolve while occupying ledger state for the rest of their TTL (#393).
+    //
+    // Every guardian on the will is swept, not just the ones the will's vote
+    // counters say voted: `reset_guardian_votes` skips the removals entirely
+    // when the count is zero, and a will that reached a terminal state through
+    // `distribute` or `merge_wills` has had its counters zeroed while vote
+    // entries from the cycle that triggered it may still be present. Up to
+    // `MAX_GUARDIANS` x 2 removals, and `remove` on an absent key is a no-op.
+    for guardian in will.guardians.iter() {
+        let address = guardian.address;
+        env.storage()
+            .persistent()
+            .remove(&DataKey::GuardianVote(will.id, address.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::GuardianCancelVote(will.id, address));
+    }
+
+    env.storage()
+        .persistent()
+        .remove(&DataKey::WillHistory(will.id));
 }

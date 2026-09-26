@@ -2784,6 +2784,21 @@ impl WillContract {
     /// are already complete before this point — but it creates an observable
     /// race condition described below.
     ///
+    /// # What archival removes
+    ///
+    /// Beyond the will entry and the owner/beneficiary/Triggered indexes,
+    /// archival also drops the will's on-chain `WillHistory` entry and every
+    /// `GuardianVote` / `GuardianCancelVote` entry belonging to its guardians
+    /// (#393). Those keys are only ever read to describe a *live* will, so
+    /// leaving them behind would strand ledger state — paid for out of the
+    /// protocol's rent — for entries no query can resolve. See
+    /// [`storage::archive_will`] for the full reasoning.
+    ///
+    /// **Clients must not treat [`WillContract::get_will_history`] as a
+    /// post-archival recovery path** — it returns an empty trail for an archived
+    /// will. Use the off-chain event log, which is never trimmed and is the
+    /// durable audit record.
+    ///
     /// # Race condition: permissionless archival and `WillNotFound` ambiguity
     ///
     /// Because any account can call `archive_will` at any time after a will
@@ -2813,9 +2828,8 @@ impl WillContract {
     /// 1. **Explicitly archived** — the will completed its lifecycle, funds
     ///    were distributed, and a third party (or the owner) called
     ///    `archive_will`. This is the normal post-release state and requires
-    ///    no recovery. The final state is recoverable from the on-chain audit
-    ///    trail via [`WillContract::get_will_history`] while that entry's own
-    ///    TTL is still live.
+    ///    no recovery. The final state is recoverable from the off-chain
+    ///    event log, which archival does not touch.
     /// 2. **Network TTL expiry** — the will's persistent entry lapsed.
     ///    Terminal wills stop renewing their TTL (see `storage::save_will`),
     ///    so Released/Cancelled wills gradually expire. The entry can be

@@ -201,6 +201,24 @@ was explicitly archived) from one that never existed. This is documented on
 probe. See [issue #166](https://github.com/SoroWill/sorowill-contracts/issues/166)
 for the full context.
 
+### What `archive_will` removes
+
+`archive_will` is permissionless: once a will is `Released` or `Cancelled`, any
+account may call it to reclaim storage. Beyond the will entry and the
+owner/beneficiary/Triggered indexes, it also drops the will's on-chain
+`WillHistory` entry and every `GuardianVote` / `GuardianCancelVote` entry
+belonging to its guardians.
+
+**History does not survive archival.** Those keys are only ever read to describe
+a *live* will, so retaining them would strand ledger state — paid for out of the
+protocol's rent — for entries no query can resolve. Consumers that need the
+audit trail after a will is archived must use the **off-chain event log**,
+which is append-only and never trimmed; the archived `Will` itself keeps the
+final status, balances, and parties until Soroban's state archival collects it.
+In particular, `get_will_history` returns an empty trail for an archived will
+and must not be used as a post-archival recovery path. See
+[issue #393](https://github.com/SoroWill/sorowill-contracts/issues/393).
+
 ## Error codes
 
 Every failure mode is a `#[contracterror]` variant of `WillError`
