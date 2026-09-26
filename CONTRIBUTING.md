@@ -42,6 +42,7 @@ For example: `feat/42-guardian-quorum-check` or `fix/17-checkin-deadline-roundin
 
 Run every command used by the [Test CI workflow](./.github/workflows/test.yml) and confirm it succeeds:
 
+- [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy --all-targets -- -D warnings`
 - [ ] `cargo test --workspace`
 - [ ] `cargo build --workspace --release --target wasm32v1-none`
