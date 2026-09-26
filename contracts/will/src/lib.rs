@@ -47,6 +47,7 @@ mod errors;
 mod events;
 mod storage;
 mod types;
+mod split_uniqueness_check;
 mod guardian_vote_freshness;
 
 /// Reusable harness that drives entry points with arbitrary input and asserts
@@ -232,6 +233,8 @@ mod set_delegate_test;
 mod split_will_test;
 #[cfg(test)]
 mod issue_420_test;
+#[cfg(test)]
+mod issue_422_test;
 // NOTE: `test.rs` (5800+ lines) is intentionally NOT wired in here. It
 // predates the current multi-token/Allocation-enum contract API entirely
 // (it exclusively uses a removed single-token `basis_points` signature) and
@@ -2746,6 +2749,7 @@ impl WillContract {
         if beneficiaries_to_split.is_empty() {
             panic_with_error!(&env, WillError::InvalidSplit);
         }
+        split_uniqueness_check::assert_split_addresses_unique(&env, &beneficiaries_to_split);
 
         // Accumulate requested amounts per token (duplicates are additive),
         // then verify each against what the source will actually holds.
