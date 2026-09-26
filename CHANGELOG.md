@@ -10,6 +10,21 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ## [Unreleased]
 
+### Fixed
+
+- `merge_wills` now derives merged percentage shares from each will's combined
+  value across **all** of its tokens, rather than from the legacy primary-token
+  mirror `Will::balance`. A secondary token held by a multi-token will used to
+  contribute nothing to the weighting, so its beneficiaries were merged at far
+  too small a share (#382).
+- `merge_beneficiaries` no longer multiplies a balance by a beneficiary's basis
+  points unchecked. Share arithmetic goes through the overflow-safe
+  `proportional_share` helper, and the reverse conversion widens to `u128`
+  before multiplying by 10,000 (#382).
+- `merge_beneficiaries` no longer leaves a dead `_allocation` clone behind,
+  and its per-beneficiary loops accumulate in place instead of rebuilding both
+  accumulator `Vec`s on every iteration (#382).
+
 ### Removed
 
 - Removed unused `InvalidPercentage` (code 22) error variant from `WillError`.
