@@ -10,6 +10,17 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ## [Unreleased]
 
+### Changed
+
+- `archive_will` now also drops the will's `WillHistory` entry and every
+  `GuardianVote` / `GuardianCancelVote` entry belonging to its guardians. Those
+  keys were previously left behind, describing a will that `load_will` can no
+  longer resolve while occupying ledger state until their TTL lapsed. The
+  decision is documented on `archive_will`: history does **not** survive
+  archival, and consumers needing the full audit trail should use the
+  off-chain event log, which is never trimmed. Accordingly, `get_will_history`
+  is no longer presented as a post-archival recovery path (#393).
+
 ### Removed
 
 - Removed unused `InvalidPercentage` (code 22) error variant from `WillError`.
