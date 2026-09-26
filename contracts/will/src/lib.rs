@@ -3642,60 +3642,77 @@ fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
     events::inheritance_released(env, will.id, token_count, count);
 }
 
+/// Combines two `Allocation`s recorded for the same beneficiary across two
+/// source wills into the single allocation the merged will carries.
+///
+/// Two fixed amounts are summed; a fixed amount always wins over a percentage
+/// (the beneficiary was promised an exact sum, which a percentage split
+/// cannot express); and two percentages collapse to `existing`, whose basis
+/// points are only advisory here — `merge_beneficiaries` recomputes them from
+/// the merged shares anyway.
+fn merge_allocation(existing: &Allocation, incoming: &Allocation) -> Allocation {
+    match (existing, incoming) {
+        (Allocation::FixedAmount(amt_a), Allocation::FixedAmount(amt_b)) => {
+            Allocation::FixedAmount(amt_a.saturating_add(*amt_b))
+        }
+        (Allocation::FixedAmount(amt), _) => Allocation::FixedAmount(*amt),
+        (_, Allocation::FixedAmount(amt)) => Allocation::FixedAmount(*amt),
+        (Allocation::Percentage(_), Allocation::Percentage(_)) => existing.clone(),
+    }
+}
+
 /// Merges beneficiaries from two wills, recalculating percentages proportionally
 /// based on the combined balance. If a beneficiary appears in both wills, their
 /// percentages are summed before recalculation. Preserves `FixedAmount` allocation
 /// types where applicable.
+///
+/// Shares are weighed by each will's **combined value across every token it
+/// holds** ([`total_balance`]), not by the legacy primary-token mirror
+/// `Will::balance`, so tokens other than the primary one are no longer ignored
+/// when the merged percentages are derived (#382). Share arithmetic goes
+/// through [`proportional_share`], which never forms the overflowing
+/// `balance * basis_points` intermediate.
 fn merge_beneficiaries(env: &Env, will_a: &Will, will_b: &Will) -> Vec<Beneficiary> {
-    let total_balance = will_a.balance + will_b.balance;
+    let value_a = total_balance(&will_a.balances);
+    let value_b = total_balance(&will_b.balances);
+    let total_value = value_a.saturating_add(value_b);
     let mut beneficiary_shares: Vec<(Address, i128)> = Vec::new(env);
     let mut beneficiary_allocations: Vec<(Address, Allocation)> = Vec::new(env);
 
-    for (beneficiaries, will_balance) in [
-        (&will_a.beneficiaries, will_a.balance),
-        (&will_b.beneficiaries, will_b.balance),
+    for (beneficiaries, will_value) in [
+        (&will_a.beneficiaries, value_a),
+        (&will_b.beneficiaries, value_b),
     ] {
         for beneficiary in beneficiaries.iter() {
             let share = match beneficiary.allocation {
-                Allocation::Percentage(bp) => will_balance * (bp as i128) / 10_000,
+                Allocation::Percentage(bp) => proportional_share(will_value, bp),
                 Allocation::FixedAmount(amt) => amt,
             };
-            let _allocation = beneficiary.allocation.clone();
+            // Accumulate in place: find this beneficiary's existing entry and
+            // add to it, rather than rebuilding both accumulator Vecs from
+            // scratch on every iteration (which allocated a fresh Vec per
+            // beneficiary and left a dead `_allocation` clone behind, #382).
             let mut found = false;
-            let mut updated_shares: Vec<(Address, i128)> = Vec::new(env);
-            let mut updated_allocations: Vec<(Address, Allocation)> = Vec::new(env);
-            for (addr, existing_share) in beneficiary_shares.iter() {
+            for i in 0..beneficiary_shares.len() {
+                let (addr, existing_share) = beneficiary_shares.get(i).unwrap();
                 if addr == beneficiary.address {
-                    updated_shares.push_back((addr, existing_share + share));
+                    let merged = existing_share.saturating_add(share);
+                    // Track original allocation type: prefer FixedAmount if
+                    // either will has it.
+                    let existing_alloc = beneficiary_allocations.get(i).unwrap().1;
+                    beneficiary_shares.set(i, (addr.clone(), merged));
+                    beneficiary_allocations.set(
+                        i,
+                        (
+                            addr,
+                            merge_allocation(&existing_alloc, &beneficiary.allocation),
+                        ),
+                    );
                     found = true;
-                } else {
-                    updated_shares.push_back((addr, existing_share));
+                    break;
                 }
             }
-            // Track original allocation type: prefer FixedAmount if either will has it
-            for (addr, existing_alloc) in beneficiary_allocations.iter() {
-                if addr == beneficiary.address {
-                    // If either the existing or new allocation is FixedAmount, preserve it
-                    let merged_alloc =
-                        match (existing_alloc.clone(), beneficiary.allocation.clone()) {
-                            (Allocation::FixedAmount(amt_a), Allocation::FixedAmount(amt_b)) => {
-                                Allocation::FixedAmount(amt_a + amt_b)
-                            }
-                            (Allocation::FixedAmount(amt), _) => Allocation::FixedAmount(amt),
-                            (_, Allocation::FixedAmount(amt)) => Allocation::FixedAmount(amt),
-                            (Allocation::Percentage(_), Allocation::Percentage(_)) => {
-                                existing_alloc.clone()
-                            }
-                        };
-                    updated_allocations.push_back((addr, merged_alloc));
-                } else {
-                    updated_allocations.push_back((addr, existing_alloc.clone()));
-                }
-            }
-            if found {
-                beneficiary_shares = updated_shares;
-                beneficiary_allocations = updated_allocations;
-            } else {
+            if !found {
                 beneficiary_shares.push_back((beneficiary.address.clone(), share));
                 beneficiary_allocations
                     .push_back((beneficiary.address.clone(), beneficiary.allocation.clone()));
@@ -3711,18 +3728,23 @@ fn merge_beneficiaries(env: &Env, will_a: &Will, will_b: &Will) -> Vec<Beneficia
     let count = beneficiary_shares.len();
 
     for (i, (addr, share)) in beneficiary_shares.iter().enumerate() {
-        // Find the original allocation type for this beneficiary
+        // `beneficiary_allocations` is maintained in lockstep with
+        // `beneficiary_shares` (same address, same index), so the original
+        // allocation type is a direct index lookup rather than a linear scan
+        // per beneficiary.
         let original_allocation = beneficiary_allocations
-            .iter()
-            .find(|(a, _)| *a == addr)
+            .get(i as u32)
             .map(|(_, alloc)| alloc);
 
         let allocation = match original_allocation {
             Some(Allocation::FixedAmount(amt)) => Allocation::FixedAmount(amt),
             _ => {
-                // Convert to percentage for non-fixed-amount beneficiaries
-                let bp = if total_balance > 0 {
-                    ((share * 10_000) / total_balance) as u32
+                // Convert to percentage for non-fixed-amount beneficiaries.
+                // Widened to u128 so the `share * 10_000` intermediate can
+                // never overflow, mirroring `proportional_share`'s guarantee
+                // in the other direction (#382).
+                let bp = if total_value > 0 {
+                    ((share as u128 * 10_000u128) / total_value as u128) as u32
                 } else {
                     0
                 };
