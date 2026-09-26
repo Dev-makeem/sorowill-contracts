@@ -10,15 +10,23 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ## [Unreleased]
 
+### Added
+
+- `WillError::DuplicateToken` (code 40): `create_will` and `batch_create_wills`
+  now reject a `tokens` list that names the same token address twice (#350).
+- `get_will_history` now records the `confirm_will` (`PendingConfirmation` to
+  `Active`) and `close_will` (`Released` to `Settled`) transitions (#352).
+
 ### Fixed
 
-- `guardian_cancel_trigger` now rejects a cancel quorum reached after the
-  will's grace deadline with `GracePeriodExpired` (#373). Previously a
-  guardian quorum could return a `Triggered` will to `Active` at any time,
-  including after the balance had become releasable via
-  `release_inheritance`, and could repeat this every check-in cycle to block
-  the release indefinitely. This matches the deadline `emergency_checkin`
-  already enforced.
+- `create_will` / `cancel_will` now record the will's real status in the audit
+  trail instead of a hardcoded `Active`, so `get_will_history` is accurate for
+  wills created with a confirmation delay and cancelled while pending (#351).
+- `cancel_will` now decrements `ProtocolStats.total_locked_by_token` for every
+  token the will held, not just the primary token, so `get_protocol_stats` no
+  longer overstates locked value after a multi-token cancellation (#353).
+- `create_will` derives the legacy `token`/`balance` mirror from the
+  accumulated `balances` map, so the two can no longer disagree (#350).
 
 ### Removed
 
