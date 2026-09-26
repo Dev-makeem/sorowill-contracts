@@ -42,8 +42,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # Add the Soroban wasm target
 rustup target add wasm32v1-none
 
-# Install the Stellar CLI
-cargo install --locked stellar-cli --features opt
+# Install the Stellar CLI (>= 22.0.0)
+cargo install --locked stellar-cli
 
 # Clone and test
 git clone https://github.com/SoroWill/sorowill-contracts.git
