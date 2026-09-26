@@ -233,6 +233,8 @@ mod issue_282_test;
 #[cfg(test)]
 mod issue_298_283_294_test;
 #[cfg(test)]
+mod issue_390_test;
+#[cfg(test)]
 mod migrate_will_test;
 #[cfg(test)]
 mod protocol_stats_test;
@@ -402,8 +404,10 @@ impl WillContract {
     ///
     /// # Panics
     /// - [`WillError::ZeroAmount`] if any token amount is not positive.
-    /// - [`WillError::TooManyBeneficiaries`] if the beneficiary/guardian/token lists are
-    ///   empty or exceed their respective caps.
+    /// - [`WillError::TooManyBeneficiaries`] if the beneficiary or guardian
+    ///   lists are empty or exceed their respective caps.
+    /// - [`WillError::InvalidTokenCount`] if the token list is empty or
+    ///   exceeds `MAX_TOKENS`.
     /// - [`WillError::InvalidPercentages`] if beneficiary basis points do not sum to 10,000.
     /// - [`WillError::DuplicateBeneficiary`] if the same address is supplied twice.
     /// - [`WillError::DuplicateGuardian`] if the same guardian is supplied twice.
@@ -477,7 +481,7 @@ impl WillContract {
         };
 
         if tokens.is_empty() || tokens.len() > MAX_TOKENS {
-            panic_with_error!(&env, WillError::TooManyBeneficiaries);
+            panic_with_error!(&env, WillError::InvalidTokenCount);
         }
         // Reject duplicate token addresses up front, before any transfer
         // happens. The rustdoc for this function promises each token address
@@ -2227,7 +2231,7 @@ impl WillContract {
     /// - [`WillError::WillNotActive`] if the source will is not `Active` or
     ///   `Triggered`.
     /// - [`WillError::ZeroAmount`] if any token amount is not positive.
-    /// - [`WillError::TooManyBeneficiaries`] if the token list is empty or too large.
+    /// - [`WillError::InvalidTokenCount`] if the token list is empty or too large.
     /// - [`WillError::FixedAmountExceedsBalance`] if the source's
     ///   `Allocation::FixedAmount` beneficiaries no longer fit the new balance.
     #[allow(clippy::too_many_arguments)]
@@ -2240,7 +2244,7 @@ impl WillContract {
         owner.require_auth();
 
         if tokens.is_empty() || tokens.len() > MAX_TOKENS {
-            panic_with_error!(&env, WillError::TooManyBeneficiaries);
+            panic_with_error!(&env, WillError::InvalidTokenCount);
         }
 
         let source = load_will(&env, source_will_id);
@@ -2362,7 +2366,10 @@ impl WillContract {
     ///
     /// # Panics
     /// - [`WillError::TooManyBeneficiaries`] if the batch is empty or exceeds
-    ///   [`BATCH_MAX`], or if any individual spec violates beneficiary/guardian/token caps.
+    ///   [`BATCH_MAX`], or if any individual spec violates the
+    ///   beneficiary/guardian caps.
+    /// - [`WillError::InvalidTokenCount`] if any individual spec's token list
+    ///   is empty or exceeds `MAX_TOKENS`.
     /// - Any error that [`create_will`] would panic with for an individual spec.
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub fn batch_create_wills(
@@ -2397,7 +2404,7 @@ impl WillContract {
             // Inline the validation + creation logic (mirrors create_will)
             // to avoid re-authorizing per will.
             if tokens.is_empty() || tokens.len() > MAX_TOKENS {
-                panic_with_error!(&env, WillError::TooManyBeneficiaries);
+                panic_with_error!(&env, WillError::InvalidTokenCount);
             }
             // Mirror `create_will`'s duplicate-token rejection so a batch spec
             // can never produce a will whose `balance` mirror disagrees with
@@ -2826,7 +2833,7 @@ impl WillContract {
     ///
     /// # Panics
     /// - [`WillError::NotOwner`] / [`WillError::WillNotActive`]
-    /// - [`WillError::TooManyBeneficiaries`] if `tokens` is empty or exceeds
+    /// - [`WillError::InvalidTokenCount`] if `tokens` is empty or exceeds
     ///   `MAX_TOKENS`.
     /// - [`WillError::ZeroAmount`] if any token amount is not positive.
     /// - [`WillError::InsufficientBalance`] if a requested token amount
@@ -2848,7 +2855,7 @@ impl WillContract {
         assert_status(&env, &source, WillStatus::Active, WillError::WillNotActive);
 
         if tokens.is_empty() || tokens.len() > MAX_TOKENS {
-            panic_with_error!(&env, WillError::TooManyBeneficiaries);
+            panic_with_error!(&env, WillError::InvalidTokenCount);
         }
         if beneficiaries_to_split.is_empty() {
             panic_with_error!(&env, WillError::InvalidSplit);
