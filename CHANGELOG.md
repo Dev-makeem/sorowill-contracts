@@ -10,6 +10,16 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ## [Unreleased]
 
+### Fixed
+
+- `guardian_cancel_trigger` now rejects a cancel quorum reached after the
+  will's grace deadline with `GracePeriodExpired` (#373). Previously a
+  guardian quorum could return a `Triggered` will to `Active` at any time,
+  including after the balance had become releasable via
+  `release_inheritance`, and could repeat this every check-in cycle to block
+  the release indefinitely. This matches the deadline `emergency_checkin`
+  already enforced.
+
 ### Removed
 
 - Removed unused `InvalidPercentage` (code 22) error variant from `WillError`.
