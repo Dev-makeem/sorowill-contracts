@@ -591,6 +591,77 @@ pub fn set_guardian_cancel_voted(env: &Env, will_id: u64, guardian: &Address, ti
         .extend_ttl(&key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
 }
 
+/// Recomputes the release-vote tallies for `will` from the vote records that
+/// are still live at `now`, deleting the expired ones on the way through.
+///
+/// [`has_guardian_voted`] treats a record older than `expiry_days` as absent,
+/// but it leaves the record (and the will's persisted
+/// `guardian_vote_weight` / `guardian_votes` counters) untouched. A guardian
+/// could therefore vote once per expiry window and have every one of those
+/// votes added on top of the previous one, reaching `guardian_threshold` alone
+/// (#372). Recomputing from the live records keeps the counters and the
+/// expiry rule in agreement: an expired vote contributes nothing.
+///
+/// Only the current guardian list is inspected — at most [`crate::MAX_GUARDIANS`]
+/// keys, the same bound [`reset_guardian_votes`] walks — so this is cheap
+/// enough to run on every vote.
+///
+/// Returns the live `(weight, votes)` tallies.
+pub fn recount_guardian_votes(
+    env: &Env,
+    will: &Will,
+    now: u64,
+    expiry_days: u64,
+) -> (u32, u32) {
+    let mut weight: u32 = 0;
+    let mut votes: u32 = 0;
+    for guardian in will.guardians.iter() {
+        let key = DataKey::GuardianVote(will.id, guardian.address.clone());
+        if env.storage().persistent().get::<_, GuardianVoteRecord>(&key).is_none() {
+            continue;
+        }
+        if has_guardian_voted(env, will.id, &guardian.address, now, expiry_days) {
+            weight = weight.saturating_add(guardian.weight);
+            votes = votes.saturating_add(1);
+        } else {
+            // Expired: drop the row so it cannot be recounted on a later pass.
+            env.storage().persistent().remove(&key);
+        }
+    }
+    (weight, votes)
+}
+
+/// Recomputes the cancel-vote tallies for `will` from the cancel-vote records
+/// that are still live at `now`, deleting the expired ones on the way through.
+///
+/// The cancel-vote counterpart of [`recount_guardian_votes`], with the same
+/// rationale: a cancel quorum must not be reachable by one guardian voting
+/// repeatedly across successive expiry windows (#372).
+///
+/// Returns the live `(weight, votes)` tallies.
+pub fn recount_guardian_cancel_votes(
+    env: &Env,
+    will: &Will,
+    now: u64,
+    expiry_days: u64,
+) -> (u32, u32) {
+    let mut weight: u32 = 0;
+    let mut votes: u32 = 0;
+    for guardian in will.guardians.iter() {
+        let key = DataKey::GuardianCancelVote(will.id, guardian.address.clone());
+        if env.storage().persistent().get::<_, GuardianVoteRecord>(&key).is_none() {
+            continue;
+        }
+        if has_guardian_cancel_voted(env, will.id, &guardian.address, now, expiry_days) {
+            weight = weight.saturating_add(guardian.weight);
+            votes = votes.saturating_add(1);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+    }
+    (weight, votes)
+}
+
 /// Clears all guardian cancel-trigger votes for `will`, starting a fresh cycle.
 ///
 /// Called when a cancel-trigger vote reaches quorum (returning the will to
