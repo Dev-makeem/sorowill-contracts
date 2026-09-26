@@ -131,6 +131,8 @@ use will::{MAX_BENEFICIARIES, MAX_GUARDIANS, GUARDIAN_THRESHOLD};
 | `get_time_until_deadline` | Seconds until the will's next relevant deadline (check-in or grace period); negative if past due, `None` if not applicable to the current status | `will_id` | `Option<i64>` |
 | `get_wills_by_owner` | Lists every will owned by an address | `owner` | `Vec<Will>` |
 | `get_wills_by_beneficiary` | Lists every will an address is named in | `beneficiary` | `Vec<Will>` |
+| `get_will_history` | Reads a will's on-chain audit trail (capped at the newest `MAX_HISTORY_ENTRIES` transitions) | `will_id` | `Vec<WillStatusTransition>` |
+| `get_will_history_page` | Reads a bounded, cursor-paged slice of a will's audit trail | `will_id`, `cursor`, `limit` | `Vec<WillStatusTransition>` |
 | `guardian_trigger` | Casts a guardian vote; 2 of 3 forces an early release | `will_id`, `guardian` | — |
 
 `checkin_period_days` and `grace_period_days` passed to `create_will` must each be at least `1` day (and at most `MAX_PERIOD_DAYS`); a value of `0` panics with `WillError::InvalidPeriod`.
@@ -266,6 +268,9 @@ disambiguate.
 | 35 | `InvalidPreimage` | `reveal_and_claim` was called with a pre-image that does not match any stored `HashedBeneficiary` commitment on the will. |
 | 36 | `AlreadyClaimed` | `reveal_and_claim` was called for a hashed beneficiary slot that has already been claimed. |
 | 37 | `TooManyWills` | An owner or beneficiary index list is already at `MAX_WILLS_PER_INDEX` and cannot accept another will id. |
+| 38 | `GuardianNotConsented` | A guardian has not accepted their role and cannot vote. |
+| 39 | `PrimaryTokenMismatch` | Cannot merge: the two wills' primary tokens differ. |
+| 40 | `InvalidTokenCount` | The token list supplied to `create_will`, `clone_will`, `split_will`, or `batch_create_wills` was empty, or contained more than `MAX_TOKENS` entries. |
 
 ## Contract spec artifact
 

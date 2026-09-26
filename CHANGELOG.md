@@ -10,16 +10,23 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ## [Unreleased]
 
-### Changed
+### Added
 
-- `archive_will` now also drops the will's `WillHistory` entry and every
-  `GuardianVote` / `GuardianCancelVote` entry belonging to its guardians. Those
-  keys were previously left behind, describing a will that `load_will` can no
-  longer resolve while occupying ledger state until their TTL lapsed. The
-  decision is documented on `archive_will`: history does **not** survive
-  archival, and consumers needing the full audit trail should use the
-  off-chain event log, which is never trimmed. Accordingly, `get_will_history`
-  is no longer presented as a post-archival recovery path (#393).
+- `WillError::DuplicateToken` (code 40): `create_will` and `batch_create_wills`
+  now reject a `tokens` list that names the same token address twice (#350).
+- `get_will_history` now records the `confirm_will` (`PendingConfirmation` to
+  `Active`) and `close_will` (`Released` to `Settled`) transitions (#352).
+
+### Fixed
+
+- `create_will` / `cancel_will` now record the will's real status in the audit
+  trail instead of a hardcoded `Active`, so `get_will_history` is accurate for
+  wills created with a confirmation delay and cancelled while pending (#351).
+- `cancel_will` now decrements `ProtocolStats.total_locked_by_token` for every
+  token the will held, not just the primary token, so `get_protocol_stats` no
+  longer overstates locked value after a multi-token cancellation (#353).
+- `create_will` derives the legacy `token`/`balance` mirror from the
+  accumulated `balances` map, so the two can no longer disagree (#350).
 
 ### Removed
 
