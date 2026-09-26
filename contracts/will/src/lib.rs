@@ -160,6 +160,11 @@ mod issue_299_test;
 #[cfg(test)]
 mod issue_guardian_vote_underflow_test;
 
+/// Regression tests for issue #370: `reveal_and_claim` validates the pre-image
+/// length before hashing and reports `InvalidPreimageLength`.
+#[cfg(test)]
+mod issue_370_test;
+
 // The following test modules exist as files but were never wired into this
 // module tree by the PRs that added them, so they silently never compiled or
 // ran under `cargo test`.
@@ -264,7 +269,7 @@ pub use types::{
 /// [`WillContract::get_contract_version`].
 ///
 /// Current baseline: **1.0.0** → `1_000_000`.
-pub const CONTRACT_VERSION: u32 = 1_000_000;
+pub const CONTRACT_VERSION: u32 = 1_000_001;
 
 /// Number of seconds in a day, used to convert the day-denominated periods
 /// stored on a `Will` into absolute ledger timestamps.
@@ -294,6 +299,18 @@ const MAX_GUARDIANS: u32 = 3;
 const MAX_PERIOD_DAYS: u64 = 3_650;
 /// Maximum number of distinct tokens a single will may hold.
 const MAX_TOKENS: u32 = 10;
+
+/// Exact byte length of a hashed beneficiary's pre-image: 32 raw address bytes
+/// followed by a 32-byte salt chosen by the beneficiary at registration time.
+///
+/// `reveal_and_claim` enforces this length *before* hashing and rejects anything
+/// else with [`WillError::InvalidPreimageLength`], rather than letting a
+/// wrong-length input fall through to a generic
+/// [`WillError::InvalidPreimage`] after a wasted SHA-256 (#370). Fixed here
+/// because a commitment is a SHA-256 digest, so an owner who registers a
+/// commitment over a different-length pre-image can never produce a matching
+/// reveal.
+pub const PREIMAGE_LENGTH: u32 = 64;
 
 /// Number of distinct guardian votes required to force an early release.
 ///
@@ -339,7 +356,7 @@ soroban_sdk::contractmeta!(
 // issue_272_test.rs; bump both together.
 soroban_sdk::contractmeta!(
     key = "Version",
-    val = "1.0.0"
+    val = "1.0.1"
 );
 soroban_sdk::contractmeta!(
     key = "Homepage",
@@ -2912,9 +2929,11 @@ impl WillContract {
     /// Verifies a pre-image against a stored commitment hash and, if correct,
     /// immediately transfers that beneficiary's share to the revealed address.
     ///
-    /// The pre-image must be 64 bytes: the first 32 bytes are the raw bytes of
-    /// the beneficiary `Address` and the remaining 32 bytes are a random salt
-    /// chosen by the beneficiary at registration time.
+    /// The pre-image must be exactly [`PREIMAGE_LENGTH`] bytes: the first 32
+    /// bytes are the raw bytes of the beneficiary `Address` and the remaining
+    /// 32 bytes are a random salt chosen by the beneficiary at registration
+    /// time. This length is checked before hashing; anything else is rejected
+    /// with [`WillError::InvalidPreimageLength`] (#370).
     ///
     /// This entrypoint works once the will is `Released`: `distribute()`
     /// withholds every unclaimed hashed beneficiary's combined percentage
@@ -2927,11 +2946,17 @@ impl WillContract {
     /// # Parameters
     /// - `will_id`: the will to claim from.
     /// - `claimant`: the address that will receive the funds; must authorise.
-    /// - `preimage`: raw bytes whose SHA-256 must match a stored commitment.
+    /// - `preimage`: raw bytes of exactly [`PREIMAGE_LENGTH`] bytes whose
+    ///   SHA-256 must match a stored commitment.
     ///
     /// # Panics
     /// - [`WillError::WillNotReleased`] if the will is not `Released`.
-    /// - [`WillError::InvalidPreimage`] if no matching commitment is found.
+    /// - [`WillError::InvalidPreimageLength`] if `preimage` is not exactly
+    ///   [`PREIMAGE_LENGTH`] bytes. Checked before hashing, so the empty, short
+    ///   or over-long pre-image fails with this error rather than the generic
+    ///   [`WillError::InvalidPreimage`] (#370).
+    /// - [`WillError::InvalidPreimage`] if a correctly-sized pre-image matches no
+    ///   stored commitment.
     /// - [`WillError::AlreadyClaimed`] if that slot was already claimed.
     pub fn reveal_and_claim(env: Env, will_id: u64, claimant: Address, preimage: Bytes) {
         claimant.require_auth();
@@ -2946,6 +2971,15 @@ impl WillContract {
             WillStatus::Released,
             WillError::WillNotReleased,
         );
+
+        // Reject a wrong-length pre-image before doing anything with it (#370).
+        // The documented pre-image layout is 32 address bytes plus a 32-byte
+        // salt, so any other length can never be a valid reveal; catching it
+        // here also avoids paying for a SHA-256 over attacker-controlled bytes
+        // and keeps the failure distinguishable from a genuine mismatch.
+        if preimage.len() != PREIMAGE_LENGTH {
+            panic_with_error!(&env, WillError::InvalidPreimageLength);
+        }
 
         // Hash the supplied pre-image with SHA-256.
         let digest = env.crypto().sha256(&preimage);

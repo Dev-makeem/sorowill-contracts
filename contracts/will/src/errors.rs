@@ -97,4 +97,9 @@ pub enum WillError {
     /// Cannot merge: the two wills' primary tokens differ, so summing their
     /// legacy `balance` fields would be nonsensical.
     PrimaryTokenMismatch = 39,
+    /// `reveal_and_claim` was called with a pre-image whose length is not
+    /// exactly [`crate::PREIMAGE_LENGTH`] bytes (32 address bytes followed by
+    /// a 32-byte salt). Checked before hashing, so a wrong-length pre-image
+    /// never reaches the commitment lookup (#370).
+    InvalidPreimageLength = 40,
 }
